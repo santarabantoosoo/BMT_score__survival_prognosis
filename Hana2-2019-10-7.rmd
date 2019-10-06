@@ -1,0 +1,4024 @@
+---
+title: "Dr.Hanaa"
+output: word_document
+---
+---
+title: "Dr-hana2"
+output: word_document
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+---
+s 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, comment = NA)
+#this chunk is used to silence code, warnings, comments and hash from appearing in output
+```
+
+
+
+```{r}
+
+# https://cran.r-project.org/web/packages/crskdiag/crskdiag.pdf   diagnositic competing risk 
+
+# https://rdrr.io/github/moreno-betancur/survtd/man/survtd.html  time dependent cumulative incidence 
+
+options(scipen = 999)
+library(flextable)
+library(finalfit) # for regression tables 
+library(factorMerger) # for merging factors together 
+library(table1)
+library(tidyverse)
+library(rio)
+library(funModeling)
+library(survival)
+library(survminer)
+library(lubridate)
+library(here)
+library(cmprsk)
+library(mstate) # for Cuminc
+library(cr17)
+library(broom)
+library(knitr)
+
+# gvhd should be added as a competing risk for relapse 
+# no it is not a problem because if A patient develops relapse, he will not develop gvhd not vice versa 
+data <- import("haplo sheet.xlsx")
+
+# sanity checks 
+
+# mean(data$Death.at.day., na.rm = T)
+# mean(data$Relapse.Day, na.rm = T)
+# mean(data$Relapse.at.day., na.rm = T)
+
+#----------------- descriptive statistics ---------------------
+names(data)<-make.names(names(data),unique = TRUE)
+
+data <- data %>% 
+  filter(!Relation.to.the.recipient. %in% c("cord", "Cord"))
+
+rmdtbl <- function(df){
+  
+tbl_alpha <- autofit(theme_vanilla(flextable(df)))
+
+tbl_alpha <- bg(tbl_alpha, bg = "blue", part = "header")
+tbl_alpha <- color(tbl_alpha, color = "white", part = "header")
+
+
+bes <- align(tbl_alpha, align = "center")
+
+bes <- align_text_col(bes, align = "center")
+return(bes)
+
+}
+```
+
+
+
+```{r}
+# Median Age and range
+
+# age_median <- as.character(median(data$Age.at.time.of.SCT.))
+# age_range <- as.character(range(data$Age.at.time.of.SCT.))
+# 
+# age_desc <- cbind(age_median, age_range[1], age_range[2])
+# 
+# colnames(age_desc) <- c("median", "lower range", "upper range")
+# 
+# kable(age_desc)
+
+```
+
+# Determining the optimum cutoff points for age 
+
+```{r}
+
+data$os_fu <- (data$DateofLastContactnew. - data$Date.of.Stem.Cell.Infusion.)/30.4
+
+data$os_stat <- 0
+data$os_stat[data$Patient.s.status == "Dead"] <- 1
+
+data$efs_st <- 0
+data$efs_st[data$Relapse.at.any.given.time.. == "Yes"] <- 1
+data$efs_st[data$Patient.s.status == "Dead"] <- 1
+
+data$efs_fu <- ymd("4000,1,1")
+
+data$efs_fu[!is.na(data$Relapse.at.day.)] <- as.Date(data$Date.of.Stem.Cell.Infusion.[!is.na(data$Relapse.at.day.)]) + data$Relapse.at.day.[!is.na(data$Relapse.at.day.)]
+
+
+data$efs_fu[data$efs_fu == ymd("4000,1,1")] <- data$DateofLastContactnew.[data$efs_fu == ymd("4000,1,1")]
+
+data$efs_fu <- as.POSIXct(data$efs_fu)
+
+data$efs_fu <- as.double(data$efs_fu - data$Date.of.Stem.Cell.Infusion., units = 'days')/30.4
+
+
+# https://osf.io/br2ym/    #  for the ROC multiple survival https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5407800/#ui-ncbiinpagenav-heading-3 
+
+
+#https://www.cghjournal.org/article/S1542-3565(13)01297-4/pdf use this link to validate your scoring system 
+
+#  http://www.medicalbiostatistics.com/scoring.pdf more than perfect to develop ur scoring sysem 
+
+# https://bmjopen.bmj.com/content/bmjopen/1/1/e000005.draft-revisions.pdf 
+
+# https://www.researchgate.net/publication/11007438_Should_scoring_rules_be_based_on_odds_ratios_or_regression_coefficients 
+
+library(survival)
+
+# findcut= function(factor=NULL,outcome=NULL,cutnum=NA,datatype=c("survival","logistic"),nmin=20,segment=100)
+# {
+#   if (missing(factor))
+#     stop("The argument factor is missing")
+#   if (missing(outcome))
+#     stop("The argument outcome is missing")
+#   if (missing(datatype))
+#     stop("The argument datatype is missing")
+#   if (datatype=="survival"){
+#     if(!is.matrix(outcome)){
+#       stop("The outcome must be matrix")
+#     }
+#     if(dim(outcome)[2]!=2){
+#       stop("The outcome's column dimensions must be two ")
+#     }
+#   }
+#   if (datatype=="logistic"){
+#     if (!is.vector(outcome))
+#       stop("The argument outcome must be vector")
+#   }
+# if (cutnum>4)
+# stop("The argument cutnum must be less than or equal to 4")
+#   z=qnorm(1-(1-0.95)/2)#caculate 95% confidence interval(cut1 need)
+#   if (datatype == "survival"){
+#     delta<-data.frame(outcome)
+#     colnames(delta)=c("event","time")
+#     userdata=na.omit(data.frame(delta$event,delta$time,factor))  #Collating of survival data
+#     colnames(userdata)=c("event","time","factor")
+#     index=order(userdata$factor)
+#     userdata=userdata[index,]
+#     n=dim(userdata)[1] #number of subject
+#     range=range(userdata$factor) #range of continous predictor
+#     cutunit=diff(range)/segment
+#     k=1 #count for result
+#     start <- c()
+#     end <- c()
+#     group <- rep(0,cutnum)#dummy variable
+#     ###############################
+#     if(cutnum==1){
+#       start[1]=userdata$factor[nmin]
+#       end[1]=userdata$factor[n-nmin*cutnum]
+#       result=matrix(NA,ncol=11,nrow=100000)
+#       colnames(result)=c("Cut1","Log-rank test","Gehan-Wilcoxon test",
+#                          "PH_assumption1","HR1","HRlow","HRup","P1","Likelihood ratio test","Waldtest","Scoretest")
+# 
+#     }else{
+#       for(i in 2:cutnum){
+#         start[1]=userdata$factor[nmin]
+#         end[1]=userdata$factor[n-nmin*cutnum]
+#         start[i]=userdata$factor[which(userdata$factor>start[i-1])[nmin]] #confirmed group2 has 20 person and where cut2 to start cutting
+#         end[i]=userdata$factor[n-nmin*(cutnum-i+1)]
+#         result=matrix(NA,ncol=4*cutnum+5,nrow=100000)
+#         colnames(result)=c(paste("Cut",1:cutnum,sep=""),"Log-rank test","Gehan-Wilcoxon test",
+#                            paste("PH_assumption",1:cutnum,sep=""),paste("HR",1:cutnum,sep=""),paste("P",1:cutnum,sep=""),"Likelihood ratio test","Waldtest","Scoretest")}
+#     }
+#     process <- function(userdata,start,end,i,cutnum,group,n,cutunit,nmin,result,k){
+#       if(i==cutnum)
+#       {
+#         while(start[i]<end[i])
+#         {
+#           if((i-1)==0){group[i]=sum(userdata$factor<=start[i])} else {group[i]=sum(userdata$factor<=start[i])-sum(group[1:(i-1)])}
+#           j <- 0:cutnum
+#           factor_status=c(rep(j[1:(tail(j+1,1)-1)],group[1:(tail(j+1,1)-1)]),rep(tail(j,1),n-sum(group[1:tail(j,1)])))
+# coxfit=coxph(Surv(userdata$time,userdata$event) ~ factor(factor_status))   #??Xt1??F?nALO-APAI?O??
+#           model= summary(coxfit)
+#           coef = model$coefficients
+#           z=qnorm(1-(1-0.95)/2)
+#           lrtest_fit= survdiff(Surv(userdata$time,userdata$event)~ factor(factor_status)) #log-rank test
+#           wilcoxon_fit=survdiff(Surv(userdata$time,userdata$event)~factor(factor_status),rho=1)  #wilcoxon test
+#           if(i==1){
+#             result[k,]=c(start[1],1-pchisq(lrtest_fit$chisq,1), 1-pchisq(wilcoxon_fit$chisq,1)
+#                          ,cox.zph(coxfit)$table[,3],coef[,2],exp(coef[1] - z * coef[3]),exp(coef[1] + z * coef[3]),coef[5]
+#                          ,model[["logtest"]]["pvalue"],model[["waldtest"]]["pvalue"],model[["sctest"]]["pvalue"])
+#           }else{
+#             result[k,]=c(start[1:cutnum],1-pchisq(lrtest_fit$chisq,cutnum), 1-pchisq(wilcoxon_fit$chisq,cutnum)
+#                          ,cox.zph(coxfit)$table[,3][1:cutnum],coef[,2],coef[,5],model[["logtest"]]["pvalue"],model[["waldtest"]]["pvalue"],model[["sctest"]]["pvalue"])
+#           }
+#           start[i]=start[i]+cutunit
+#           k=k+1
+#         }
+#         if(cutnum==1){
+#           return(result)
+#         }else{
+#           return(list(start=start,group=group,result=result,k=k))
+#         }
+#       }
+#       else
+#       {
+#         while(start[i]<end[i])
+#         {
+#           if(i==1){group[i]=sum(userdata$factor<=start[i])} else {group[i]=sum(userdata$factor<=start[i])-sum(group[1:(i-1)])}
+#           processin=process(userdata,start,end,i+1,cutnum,group,n,cutunit,nmin,result,k)
+#           group=processin$group
+#           start=processin$start
+#           result=processin$result
+#           k=processin$k;
+#           start[i] = start[i]+cutunit
+#           start[i+1] = userdata$factor[sum(userdata$factor<=start[i])+nmin]
+#         }
+#         if(i!=1)
+#         {
+#           return(list(start=start,group=group,result=result,k=k))
+#         }
+#         else
+#         {
+#           return(result)
+#         }
+#       }
+#     }
+#     allcut=na.omit(data.frame(process(userdata,start,end,i=1,cutnum,group,n,cutunit,nmin,result,k)))
+#     if(cutnum==1){
+#       par(mfrow=c(1,2))
+#       plotdata=data.frame(cut=allcut[,"Cut1"],HR=allcut[,"HR1"],HRlow=allcut[,"HRlow"],HRup=allcut[,"HRup"],p=allcut[,"Log.rank.test"])
+#       plot(plotdata$cut,plotdata$HR,type="l",lwd=2,xlab="Cutoff point",ylab="Hazard ratio",main="Cutoff point and Hazard Ratio",ylim=c(min(allcut[,"HRlow"]),max(allcut[,"HR1"])))
+#       lines(plotdata$cut,plotdata$HRlow,lty=2)
+#       lines(plotdata$cut,plotdata$HRup,lty=2)
+#       plot(plotdata$cut,plotdata$p,type="l",lwd=2,xlab="Cutoff point",ylab="p-value",main="Cutoff point and p-value")
+#       phokin=which(allcut[,"PH_assumption1"]>0.05)
+#     }else{
+#       ph <- paste("PH_assumption",1:cutnum,sep="")
+#       phok<-matrix(data=NA,ncol=10000,nrow=4)
+#       for(i in 1:cutnum)
+#       {
+#         maxph <- length(which(allcut[,ph[i]]>0.05))
+#         for(x in 1:maxph){
+#           phok[i,x]=which(allcut[,ph[i]]>0.05)[x]
+#         }
+#       }
+#       phokin <- as.vector(phok[1:cutnum,])
+#       for(i in 1:(cutnum-1)){
+#         phokin=na.exclude(intersect(intersect(phok[i,],phokin),phok[i+1,]))
+#       }
+#     }
+#     ################################################################################
+#     bestcut <- matrix(NA,ncol=cutnum,nrow=1)
+#     colnames(bestcut)=c(paste("Cut",1:cutnum,sep=""))
+#     cutpoint <- c(allcut[which.min(allcut[,"Log.rank.test"]),][1:cutnum],allcut[which.min(allcut[,"Gehan.Wilcoxon.test"]),][1:cutnum],
+#                   allcut[phokin[which.min(allcut[phokin,"Likelihood.ratio.test"])],][1:cutnum],allcut[phokin[which.min(allcut[phokin,"Waldtest"])],][1:cutnum],
+#                   allcut[phokin[which.min(allcut[phokin,"Scoretest"])],][1:cutnum])
+#     cutmatrix <- matrix(as.numeric(cutpoint),ncol=cutnum,byrow=T)
+#     count=c()
+#     for(i in 1:5){
+#       count[i]=paste(cutmatrix[i,],collapse = "")
+#     }
+#     tablenumber <- data.frame(table(count))
+#     bestcut[1,] <- cutmatrix[which(count==tablenumber[which.max(tablenumber$Freq),1])[1],]
+#     if(cutnum==1){
+#       output=list(allcut=allcut,
+#                   logranktest=allcut[which.min(allcut[,"Log.rank.test"]),],
+#                   wilcoxon=allcut[which.min(allcut[,"Gehan.Wilcoxon.test"]),],
+#                   logtest=allcut[phokin[which.min(allcut[phokin,"Likelihood.ratio.test"])],],
+#                   waldtest=allcut[phokin[which.min(allcut[phokin,"Waldtest"])],],
+#                   scoretest=allcut[phokin[which.min(allcut[phokin,"Scoretest"])],],
+#                   HRabsmax=allcut[phokin[which.max(abs(allcut[phokin,"HR1"]-1))],])
+#       #,bestcut=bestcut)
+#     }
+#     else {
+#       output=list(allcut=allcut,
+#                   logranktest=allcut[which.min(allcut[,"Log.rank.test"]),],
+#                   wilcoxon=allcut[which.min(allcut[,"Gehan.Wilcoxon.test"]),],
+#                   logtest_likelihood.ratio.test=allcut[phokin[which.min(allcut[phokin,"Likelihood.ratio.test"])],],
+#                   waldtest=allcut[phokin[which.min(allcut[phokin,"Waldtest"])],],
+#                   scoretest=allcut[phokin[which.min(allcut[phokin,"Scoretest"])],])
+#       #,bestcut=bestcut)
+#     }
+#     return(output)
+#   }# datatype=survival end
+#----------------------------------------logit regression---------------------------------------------------------#
+#   if (datatype == "logistic"){
+#     userdata=na.omit(data.frame(outcome,factor))
+#     index=order(userdata$factor)
+#     userdata=userdata[index,]
+#     n=dim(userdata)[1] #number of subject
+#     range=range(userdata$factor) #range of continous predictor
+#     cutunit=diff(range)/segment
+#     logist_red <- glm(userdata$outcome ~1, family=binomial())# no other variable so the natural prediction is the mean of userdata$outcome ,reduce model
+#     k=1 #count for result
+#     start <- c()
+#     end <- c()
+#     group <- rep(0,cutnum)  #dummy variable
+#     #----------------------------------------cut---------------------------------------------------------#
+#     if(cutnum==1){
+#       start[1]=userdata$factor[nmin]
+#       end[1]=userdata$factor[n-nmin*cutnum]
+#       result=matrix(NA,ncol=13,nrow=100000)
+#       colnames(result)=c("Cut1","OR1","OR_up","OR_low","P1","Likelihood ratio test","Waldtest","Scoretest","Specificity","Sensitivity","Youden",
+#                          "Fisher's Exact Test","AUC")
+#     }else{
+#       for(i in 2:cutnum){
+#         start[1]=userdata$factor[nmin]
+#         end[1]=userdata$factor[n-nmin*cutnum]
+#         start[i]=userdata$factor[which(userdata$factor>start[i-1])[nmin]] #confirmed group2 has 20 person and where cut2 to start cutting
+#         end[i]=userdata$factor[n-nmin*(cutnum-i+1)]
+#         result=matrix(NA,ncol=3*cutnum+11,nrow=100000)
+#         colnames(result)=c(paste("Cut",1:cutnum,sep=""),paste("OR",1:cutnum,sep=""),paste("P",1:cutnum,sep=""),"Likelihood ratio test","Waldtest","Scoretest","Specificity","Sensitivity","Lower","Higher","Youden","euclidean","manhattan","AUC")
+#       }
+#     }
+#     process <- function(userdata,start,end,i,cutnum,group,n,cutunit,nmin,result,k){
+#       if(i==cutnum)
+#       {
+#         while(start[i]<end[i])
+#         {
+#           if(i==1){group[i]=sum(userdata$factor<=start[i])} else {group[i]=sum(userdata$factor<=start[i])-sum(group[1:(i-1)])}
+#           j <- 0:cutnum
+#           factor_status=c(rep(j[1:(tail(j+1,1)-1)],group[1:cutnum]),rep(tail(j,1),n-sum(group[1:tail(j,1)])))
+#           logist_fit =glm(userdata$outcome ~factor(factor_status), family=binomial())
+#           model= summary(logist_fit)
+#           coef = model$coefficients
+#           table<- table(userdata$outcome, factor_status)
+#           Fisher.test=fisher.test(table)$p.value
+#           roc <- roc(userdata$outcome,factor_status)
+#           spe=roc$specificities*100
+#           sen=roc$sensitivities*100
+#           euc <- sqrt((rep(100,cutnum+2)-spe)^2+(rep(100,cutnum+2)-sen)^2)
+#           manhan <- abs(rep(100,cutnum+2)-spe)+abs(sen-rep(100,cutnum+2))
+#           LRT=anova(logist_fit,logist_red,test="Chisq")
+#           Scoretest=anova(logist_fit,logist_red,test="Rao")
+#           z=qnorm(1-(1-0.95)/2)
+#           if(i==1){
+#             Waldtest=wald.test(b = coef(logist_fit), Sigma = vcov(logist_fit), Terms = 2)
+#             result[k,]=c(start[1],exp(coef[2]),exp((coef[2]+z*coef[4])),exp((coef[2]-z*coef[4])),coef[8],LRT$P[2],Waldtest$result$chi2[3],Scoretest$P[2],
+#                          spe[2],sen[2],sen[2]+spe[2]-1,Fisher.test,as.numeric(roc$auc))
+#           }else{
+#             Waldtest=wald.test(b = coef(logist_fit), Sigma = vcov(logist_fit), Terms = 2:(cutnum+1))
+#             maxroc=which.max(sen+spe)
+#             mineuc=which.min(euc)
+#             minman=which.min(manhan)
+#             result[k,]=c(start[1:cutnum],exp(coef[2:(cutnum+1)]),coef[(3*cutnum+5):(4*cutnum+4)],LRT$P[2], Waldtest$result$chi2[3],Scoretest$P[2]
+#                          ,spe[maxroc],sen[maxroc],sen[maxroc]-100*z*sqrt((sen[maxroc]/100)*(1-sen[maxroc]/100)/(sum(na.exclude(outcome)==1)))
+#                          ,sen[maxroc]+100*z*sqrt((sen[maxroc]/100)*(1-sen[maxroc]/100)/(sum(na.exclude(outcome)==1)))
+#                          ,sen[maxroc]+spe[maxroc]-1,sqrt((sen[mineuc]-100)^2 + (spe[mineuc]-100)^2),abs(sen[minman]-100)+ abs(100-spe[minman]),as.numeric(roc$auc))
+# 
+#           }
+#           start[i]=start[i]+cutunit
+#           k=k+1
+#         }
+#         if(cutnum==1){
+#           return(result)
+#         }else{
+#           return(list(start=start,group=group,result=result,k=k))
+#         }
+#       }
+#       else
+#       {
+#         while(start[i]<end[i])
+#         {
+#           if(i==1){group[i]=sum(userdata$factor<=start[i])} else {group[i]=sum(userdata$factor<=start[i])-sum(group[1:(i-1)])}
+#           processin=process(userdata,start,end,i+1,cutnum,group,n,cutunit,nmin,result,k)
+#           group=processin$group
+#           start=processin$start
+#           result=processin$result
+#           k=processin$k;
+#           start[i] = start[i]+cutunit
+#           start[i+1] = userdata$factor[sum(userdata$factor<=start[i])+nmin]
+#         }
+#         if(i!=1)
+#         {
+#           return(list(start=start,group=group,result=result,k=k))
+#         }
+#         else
+#         {
+#           return(result)
+#         }
+#       }
+#     }
+# 
+#     allcut=na.omit(data.frame(process(userdata,start,end,i=1,cutnum,group,n,cutunit,nmin,result,k)))
+#     if(cutnum==1){
+#       par(mfrow=c(1,2))
+#       plotdata=data.frame(cut=allcut[,"Cut1"],OR=allcut[,"OR1"],ORup=allcut[,"OR_up"],ORlow=allcut[,"OR_low"],p=allcut[,"Likelihood.ratio.test"])
+#       plot(plotdata$cut,plotdata$OR,type="l",lwd=2,xlab="Cutoff point",ylab="Odds ratio",main="Cutoff point and Odds Ratio", ylim=c(min(allcut[,"OR_low"]),max(allcut[,"OR1"])))
+#       lines(plotdata$cut,plotdata$ORlow,lty=2)
+#       lines(plotdata$cut,plotdata$ORup,lty=2)
+#       plot(plotdata$cut,plotdata$p,type="l",lwd=2,xlab="Cutoff point",ylab="p-value",main="Cutoff point and p-value")
+#       allcut$euclidean=sqrt((100-allcut$Sensitivity)^2 + (100-allcut$Specificity)^2)
+#       allcut$manhattan=100-allcut$Sensitivity+ 100-allcut$Specificity
+#     }
+# -----------------------------------------------------------------------------------------------#
+#     bestcut <- matrix(NA,ncol=cutnum,nrow=1)
+#     colnames(bestcut)=c(paste("Cut",1:cutnum,sep=""))
+#     if(cutnum==1){
+#       cutpoint <- c(allcut[which.min(allcut[,"Likelihood.ratio.test"]),][1:cutnum],allcut[which.min(allcut[,"Waldtest"]),][1:cutnum],
+#                     allcut[which.min(allcut[,"Scoretest"]),][1:cutnum],allcut[which.min(allcut$Fisher.s.Exact.Test),][1:cutnum],allcut[which.max(allcut[,"Youden"]),][1:cutnum],
+#                     allcut[which.min(allcut[,"euclidean"]),][1:cutnum],allcut[which.max(allcut[,"manhattan"]),][1:cutnum],allcut[which.max(allcut[,"AUC"]),][1:cutnum])
+#     }
+#     else{
+#       cutpoint <- c(allcut[which.min(allcut[,"Likelihood.ratio.test"]),][1:cutnum],allcut[which.min(allcut[,"Waldtest"]),][1:cutnum],
+#                     allcut[which.min(allcut[,"Scoretest"]),][1:cutnum],allcut[which.max(allcut[,"Youden"]),][1:cutnum],
+#                     allcut[which.min(allcut[,"euclidean"]),][1:cutnum],allcut[which.max(allcut[,"manhattan"]),][1:cutnum],allcut[which.max(allcut[,"AUC"]),][1:cutnum])
+#     }
+#     cutmatrix <- matrix(as.numeric(cutpoint),ncol=cutnum,byrow=T)
+#     count=c()
+#     if(cutnum==1){
+#       for(i in 1:8){
+#         count[i]=paste(cutmatrix[i,],collapse = "")
+#       }
+#     }
+#     else{
+#       for(i in 1:7){
+#         count[i]=paste(cutmatrix[i,],collapse = "")
+#       }
+#     }
+#     tablenumber <- data.frame(table(count))
+#     bestcut[1,] <- cutmatrix[which(count==tablenumber[which.max(tablenumber$Freq),1])[1],]
+#     if(cutnum==1){
+#       output=list(allcut=allcut,
+#                   Likelihood.ratio.test=allcut[which.min(allcut[,"Likelihood.ratio.test"]),],
+#                   waldtest=allcut[which.min(allcut[,"Waldtest"]),],
+#                   scoretest=allcut[which.min(allcut[,"Scoretest"]),],
+#                   ORabsmax=allcut[which.max(abs(allcut$OR1)),],
+#                   youden=allcut[which.max(allcut$Youden),],
+#                   Fisher.test=allcut[which.min(allcut$Fisher.s.Exact.Test),],
+#                   euclidean=allcut[which.min(allcut$euclidean),],
+#                   manhattan=allcut[which.min(allcut$manhattan),],
+#                   AUC=allcut[which.max(allcut[,"AUC"]),])
+#       #,bestcut=bestcut)
+#     }
+#     else
+#     {
+#       output=list(allcut=allcut,
+#                   Likelihood.ratio.test=allcut[which.min(allcut[,"Likelihood.ratio.test"]),],
+#                   waldtest=allcut[which.min(allcut[,"Waldtest"]),],
+#                   scoretest=allcut[which.min(allcut[,"Scoretest"]),],
+#                   youden=allcut[which.max(allcut[,"Youden"]),],
+#                   euclidean=allcut[which.min(allcut[,"euclidean"]),],
+#                   manhattan=allcut[which.min(allcut[,"manhattan"]),],
+#                   AUC=allcut[which.max(allcut[,"AUC"]),])
+#       #,bestcut=bestcut)
+#     }
+#   }
+#   return(output)
+# }
+# 
+# 
+# 
+# #The packdata$Age.at.time.of.SCT. was developed by Meng-Ke Hsieh, Wen-Yi Chang and Chung Chang.
+# #A step-by-step manual for using our packdata$Age.at.time.of.SCT. can be found here: http://www.math.nsysu.edu.tw/~cchang/cutoff/manual.doc
+# 
+# # findcutnum is a function that computes the optimal number of cutoffs.
+# # The criterion is to minimize AIC.
+# # This function can deal with both survival outcome and binary outcome.
+# # Input arguments for findcutnum: (Let N be the number of individuals)
+# # "factor" (Nx1 vector) is a continous risk factor that needs the optimal number of cutoffs;
+# # datatype (a string) indicates the type of data (for survival outcome, use "survival"; for binary one, use "logistic");
+# # nmin (a positive integer) is the minimum number of individuals in each group and the default number is 20; segment is the total number of pieces and the default number is 100.
+# 
+# # For survival data: findcutnum (factor,outcome,datatype,nmin=20,segment=100)
+# # Here outcome is a survival object (event, time), where event is the event indicator (1:event occurs; 0:right censoring) and time is the
+# # observed time (i.e., minimum of event time and right censoring time);
+# # #e.g. Example for survival outcome: BMI vs overall survival (OS): findcutnum(BMI,(event,OS),datatype="survival",30,100)
+# # # Here event is the event indicator (1: death occurs; 0: right censoring). 
+# # 
+# # # Binary outcome: findcutnum (factor,outcome,datatype,nmin,segment)
+# # #e.g. Example for binary outcome: fraction of tumor invasion (a risk factor) vs. lymphavascular space invasion (LVSI), a binary outcome. findcutnum(invasion,LVSI,"logistic",30,100)
+# # # findcutnum(invasion,LVSI,"logistic",30,100)
+# # 
+# findcutnum = function (factor,outcome,datatype,nmin=20,segment=100)
+# {
+#   if (missing(factor))
+#     stop("The argument factor is missing")
+#   if (missing(outcome))
+#     stop("The argument outcome is missing")
+#   if (missing(datatype))
+#     stop("The argument datatype is missing")
+#   if (missing(datatype))
+#     stop("The argument datatype is missing")
+#   if (datatype=="survival"){
+#     if(!is.matrix(outcome)){
+#       stop("The outcome must be matrix")
+#     }
+#     if(dim(outcome)[2]!=2){
+#       stop("The outcome's column dimensions must be two ")
+#     }
+#   }
+#   if (datatype=="logistic"){
+#     if (!is.vector(outcome))
+#       stop("The argument outcome must be  vector")
+#   }
+#   if (datatype == "survival"){
+#     delta<-data.frame(outcome)
+#     colnames(delta)=c("event","time")
+#     userdata=na.omit(data.frame(delta$event,delta$time,factor))  #Collating of survival data
+#     colnames(userdata)=c("event","time","factor")
+#     index=order(userdata$factor)
+#     userdata=userdata[index,]
+#     n=dim(userdata)[1] #number of subject
+# 
+#     range=range(userdata$factor) #range of continous predictor
+#     cutunit=diff(range)/segment
+#     p=1
+#     coxfit = coxph(Surv(userdata$time,userdata$event) ~ userdata$factor)
+#     originAIC=(-2*coxfit$loglik[2])+2*p
+#     #originAICc=AIC+(2*p*(p+1)/(n-p-1))
+# 
+# 
+#     cut1AIC=c()
+#     start1=userdata$factor[nmin] #confirmed group1 has 20 person and where cut1 to start cutting
+#     end1=userdata$factor[n-nmin]#cut1 end
+#     while(start1<end1)
+#     {
+#       group1=sum(userdata$factor<=start1) #nummber of group1
+#       factor_status=c(rep(0,group1),rep(1,n-group1))
+#       coxfit = coxph(Surv(userdata$time,userdata$event) ~ factor(factor_status))
+#       AIC=(-2*coxfit$loglik[2])+2*p
+#       AICc=AIC+(2*p*(p+1)/(n-p-1))
+#       cut1AIC=c(cut1AIC,AIC)
+#       start1=start1+cutunit
+#     }
+#     #-------------------------------------cut2------------------------------------------------------------#
+#     p=2
+#     cut2AIC=c()
+#     start1=userdata$factor[nmin] #confirmed group1 has 20 person and where cut1 to start cutting
+#     end1=userdata$factor[n-nmin*2]#cut1 end
+# 
+#     start2=userdata$factor[which(userdata$factor>start1)[nmin]] #confirmed group2 has 20 person and where cut2 to start cutting
+#     end2=userdata$factor[n-nmin] #cut2 end
+# 
+#     while(start1<end1)
+#     {
+#       group1=sum(userdata$factor<=start1) #nummber of group1
+#       while(start2<end2)
+#       {
+#         group2=sum(userdata$factor<=start2)-group1
+#         factor_status=c(rep(0,group1),rep(1,group2),rep(2,n-group1-group2))
+#         coxfit = coxph(Surv(userdata$time,userdata$event) ~ factor(factor_status))
+#         AIC=(-2*coxfit$loglik[2])+2*p
+#         AICc=AIC+(2*p*(p+1)/(n-p-1))
+#         cut2AIC=c(cut2AIC,AIC)
+#         start2=start2+cutunit
+#       }
+#       start1 = start1+cutunit
+#       start2 = userdata$factor[sum(userdata$factor<=start1)+nmin]
+#     }
+#     #-------------------------------------cut3------------------------------------------------------------#
+#     p=3
+#     cut3AIC=c()
+#     start1=userdata$factor[nmin] #confirmed group1 has 20 person and where cut1 to start cutting
+#     end1=userdata$factor[n-nmin*3]#cut1 end
+# 
+#     start2=userdata$factor[which(userdata$factor>start1)[nmin]] #confirmed group2 has 20 person and where cut2 to start cutting
+#     end2=userdata$factor[n-nmin*2] #cut2 end
+# 
+#     start3=userdata$factor[which(userdata$factor>start2)[nmin]] #confirmed group2 has 20 person and where cut2 to start cutting
+#     end3=userdata$factor[n-nmin]
+# 
+#     while(start1<end1)
+#     {
+#       group1=sum(userdata$factor<=start1) #nummber of group1
+#       while(start2<end2)
+#       {
+#         group2=sum(userdata$factor<=start2)-group1
+#         while(start3<end3)
+#         {
+#           group3=sum(userdata$factor<=start3)-group1-group2
+#           factor_status=c(rep(0,group1),rep(1,group2),rep(2,group3),rep(3,n-group1-group2-group3))
+#           coxfit=coxph(Surv(userdata$time,userdata$event) ~ factor(factor_status))
+#           AIC=(-2*coxfit$loglik[2])+2*p
+#           AICc=AIC+(2*p*(p+1)/(n-p-1))
+#           start3=start3+cutunit
+#           cut3AIC=c(cut3AIC,AIC)
+#         }
+#         start2 = start2+cutunit
+#         start3 = userdata$factor[sum(userdata$factor<=start2)+nmin]
+#       }
+#       start1 = start1+cutunit
+#       start2 = userdata$factor[sum(userdata$factor<=start1)+nmin]
+#     }
+#     #-----------------------------------------cut4---------------------------------------------#
+#     p=4
+#     cut4AIC=c()
+#     start1=userdata$factor[nmin] #confirmed group1 has 20 person and where cut1 to start cutting
+#     end1=userdata$factor[n-nmin*4]#cut1 end
+# 
+#     start2=userdata$factor[which(userdata$factor>start1)[nmin]] #confirmed group2 has 20 person and where cut2 to start cutting
+#     end2=userdata$factor[n-nmin*3] #cut2 end
+# 
+#     start3=userdata$factor[which(userdata$factor>start2)[nmin]] #confirmed group2 has 20 person and where cut2 to start cutting
+#     end3=userdata$factor[n-nmin*2]
+# 
+#     start4=userdata$factor[which(userdata$factor>start3)[nmin]] #confirmed group2 has 20 person and where cut2 to start cutting
+#     end4=userdata$factor[n-nmin]
+# 
+#     while(start1<end1)
+#     {
+#       group1=sum(userdata$factor<=start1) #nummber of group1
+#       while(start2<end2)
+#       {
+#         group2=sum(userdata$factor<=start2)-group1
+#         while(start3<end3)
+#         {
+#           group2=sum(userdata$factor<=start2)-group1
+#           while(start4<end4)
+#           {
+#             group4=sum(userdata$factor<=start4)-group1-group2-group3
+#             factor_status=c(rep(0,group1),rep(1,group2),rep(2,group3),rep(3,group4),rep(4,n-group1-group2-group3-group4))
+#             coxfit=coxph(Surv(userdata$time,userdata$event) ~ factor(factor_status))
+#             AIC=(-2*coxfit$loglik[2])+2*p
+#             AICc=AIC+(2*p*(p+1)/(n-p-1))
+#             start4=start4+cutunit
+#             cut4AIC=c(cut4AIC,AIC)
+#           }
+#           start3 = start3+cutunit
+#           start4 = userdata$factor[sum(userdata$factor<=start3)+nmin]
+#         }
+#         start2 = start2+cutunit
+#         start3 = userdata$factor[sum(userdata$factor<=start2)+nmin]
+#       }
+#       start1 = start1+cutunit
+#       start2 = userdata$factor[sum(userdata$factor<=start1)+nmin]
+#     }
+# 
+#   }#type=sur
+# 
+# 
+#   #-------------------------------------------------------------------------------------------------------------------#
+#   if (datatype == "logistic"){
+#     userdata=na.omit(data.frame(outcome,factor))
+#     index=order(userdata$factor)
+#     userdata=userdata[index,]
+# 
+#     n=dim(userdata)[1] #number of subject
+# 
+#     range=range(userdata$factor) #range of continous predictor
+#     cutunit=diff(range)/segment
+#     logist_red <- glm(userdata$outcome ~userdata$factor, family=binomial())
+#     originAIC=logist_red$aic
+# 
+#     #----------------------------------------cut 1 ---------------------------------------------------------#
+#     cut1AIC=c()
+#     start1=userdata$factor[nmin] #confirmed group1 has 20 person and where cut1 to start cutting
+#     end1=userdata$factor[n-nmin]#cut1 end
+# 
+#     while(start1<end1)
+#     {
+#       group1=sum(userdata$factor<=start1) #nummber of group1
+#       factor_status=c(rep(0,group1),rep(1,n-group1))
+#       logist_fit =glm(userdata$outcome ~factor(factor_status), family=binomial())
+#       AIC=logist_fit$aic
+#       start1=start1+cutunit
+#       cut1AIC=c(cut1AIC,AIC)
+#     }
+#     #----------------------------------------cut 2 ---------------------------------------------------------#
+#     cut2AIC=c()
+#     start1=userdata$factor[nmin] #confirmed group1 has 20 person and where cut1 to start cutting
+#     end1=userdata$factor[n-nmin*2]#cut1 end
+# 
+#     start2=userdata$factor[which(userdata$factor>start1)[nmin]] #confirmed group2 has 20 person and where cut2 to start cutting
+#     end2=userdata$factor[n-nmin] #cut2 end
+#     while(start1<end1)
+#     {
+#       group1=sum(userdata$factor<=start1) #nummber of group1
+#       while(start2<end2)
+#       {
+#         group2=sum(userdata$factor<=start2)-group1
+#         factor_status=c(rep(0,group1),rep(1,group2),rep(2,n-group1-group2))
+#         logist_fit =glm(userdata$outcome ~factor(factor_status),family=binomial())
+#         start2=start2+cutunit
+#         AIC=logist_fit$aic
+#         cut2AIC=c(cut2AIC,AIC)
+#       }
+# 
+#       start1 = start1+cutunit
+#       start2 = userdata$factor[sum(userdata$factor<=start1)+nmin]
+#     }
+#     #----------------------------------------cut 3 ---------------------------------------------------------#
+#     cut3AIC=c()
+#     start1=userdata$factor[nmin] #confirmed group1 has 20 person and where cut1 to start cutting
+#     end1=userdata$factor[n-nmin*3]#cut1 end
+# 
+#     start2=userdata$factor[which(userdata$factor>start1)[nmin]] #confirmed group2 has 20 person and where cut2 to start cutting
+#     end2=userdata$factor[n-nmin*2] #cut2 end
+# 
+#     start3=userdata$factor[which(userdata$factor>start2)[nmin]] #confirmed group2 has 20 person and where cut2 to start cutting
+#     end3=userdata$factor[n-nmin]
+#     while(start1<end1)
+#     {
+#       group1=sum(userdata$factor<=start1) #nummber of group1
+# 
+#       while(start2<end2)
+#       {
+#         group2=sum(userdata$factor<=start2)-group1
+# 
+#         while(start3<end3)
+#         {
+#           group3=sum(userdata$factor<=start3)-group1-group2
+#           factor_status=c(rep(0,group1),rep(1,group2),rep(2,group3),rep(3,n-group1-group2-group3))
+#           logist_fit =glm(userdata$outcome ~factor(factor_status), family=binomial())
+#           AIC=logist_fit$aic
+#           cut3AIC=c(cut3AIC,AIC)
+#           start3=start3+cutunit
+# 
+#         }
+# 
+#         start2 = start2+cutunit
+#         start3 = userdata$factor[sum(userdata$factor<=start2)+nmin]
+# 
+#       }
+# 
+#       start1 = start1+cutunit
+#       start2 = userdata$factor[sum(userdata$factor<=start1)+nmin]
+#     }
+#     #----------------------------------------cut 4 ---------------------------------------------------------#
+#     cut4AIC=c()
+#     start1=userdata$factor[nmin] #confirmed group1 has 20 person and where cut1 to start cutting
+#     end1=userdata$factor[n-nmin*4]#cut1 end
+# 
+#     start2=userdata$factor[which(userdata$factor>start1)[nmin]] #confirmed group2 has 20 person and where cut2 to start cutting
+#     end2=userdata$factor[n-nmin*3] #cut2 end
+# 
+#     start3=userdata$factor[which(userdata$factor>start2)[nmin]] #confirmed group2 has 20 person and where cut2 to start cutting
+#     end3=userdata$factor[n-nmin*2]
+# 
+#     start4=userdata$factor[which(userdata$factor>start3)[nmin]]
+#     end4=userdata$factor[n-nmin]
+#     while(start1<end1)
+#     {
+#       group1=sum(userdata$factor<=start1) #nummber of group1
+# 
+#       while(start2<end2)
+#       {
+#         group2=sum(userdata$factor<=start2)-group1
+# 
+#         while(start3<end3)
+#         {
+#           group3=sum(userdata$factor<=start3)-group1-group2
+#           while(start4<end4)
+#           {
+#             group4=sum(userdata$factor<=start4)-group1-group2-group3
+#             factor_status=c(rep(0,group1),rep(1,group2),rep(2,group3),rep(3,group4),rep(4,n-group1-group2-group3-group4))
+#             logist_fit =glm(userdata$outcome ~factor(factor_status), family=binomial())
+#             AIC=logist_fit$aic
+#             cut4AIC=c(cut4AIC,AIC)
+#             start4=start4+cutunit
+# 
+#           }
+#           start3 = start3+cutunit
+#           start4 = userdata$factor[sum(userdata$factor<=start3)+nmin]
+# 
+#         }
+# 
+#         start2 = start2+cutunit
+#         start3 = userdata$factor[sum(userdata$factor<=start2)+nmin]
+# 
+#       }
+# 
+#       start1 = start1+cutunit
+#       start2 = userdata$factor[sum(userdata$factor<=start1)+nmin]
+#     }
+# 
+#   } #log end
+#   AICmin=which.min(c(min(originAIC),min(cut1AIC),min(cut2AIC),min(cut3AIC),min(cut4AIC)))
+#   cat(paste("AIC have a minimum value ","When cutnum = ",AICmin-1,"\n",sep=""))
+#   return(list(min=c(min(originAIC),min(cut1AIC),min(cut2AIC),min(cut3AIC),min(cut4AIC))))
+# }
+
+#findcutnum(data$Age.at.time.of.SCT.,cbind(data$os_stat,data$os_fu),"survival" ,20,20) # watch out because this function takes a lot of time when the last number is big ..   # this gives 3 cuts,,, too much 
+
+#three_cuts <- findcutnum(data$Age.at.time.of.SCT.,cbind(data$os_stat,data$os_fu),"survival" ,20,80) # watch out because this function takes a lot of time when the last number is big ..  this againn gives 3 cuts 
+#
+#
+#findcutnum(data$Age.at.time.of.SCT.,cbind(data$os_stat,data$os_fu),"survival" ,40,20) #  # this time it gives 2 cuts when we increased the min number per group
+
+# as we increase the min number of patients per cut, the optimum number of cuts changes from 3 to 2
+# However, it is better fot the scoring system to use the 2 cuts to minimize sub-grouping
+
+# for the 3 cut,  the results were as follows
+
+#try3 <- findcut(factor=data$Age.at.time.of.SCT., outcome=cbind (data$os_stat,data$os_fu),cutnum=3, datatype = "survival", nmin=20, segment=20)
+
+
+#try3$scoretest[1:3]
+
+# this makes sense, because the prognosis of the very young is dismal, however, there are only 20 patients less than 20, that's why when we increase the minimum number of patients, the cutpoint at 2.7 is neglected and we are left with 2 cutoffs only
+
+# bottom line, recommend the 3 cuts, but use the 2 cuts in your analysis
+# because you need a larger sample size for the patients less than 2.7 to be used.
+
+# if we tried the 2 cuts, the yeild is
+
+#try2a <- findcut(factor=data$Age.at.time.of.SCT., outcome=cbind (data$os_stat,data$os_fu),cutnum=2, datatype = "survival", nmin=30, segment=20)
+
+#kable(try2a$scoretest[1:4], digits = 3)   # I will report this one   5.7 and 11
+
+#try2b <- findcut(factor=data$Age.at.time.of.SCT., outcome=cbind (data$os_stat,data$os_fu),cutnum=2, datatype = "survival", nmin=40, segment=20)  # same result
+
+# sum(data$Age.at.time.of.SCT.<3)
+# try2b$scoretest[1:3]
+
+# according to doctor hanafy's choice, 3 cuts is too much.
+
+```
+
+using ROC survival for multiple cut-off points, two cut-offs were recommended; 6 years and 11 years  
+
+# merging diagnosis factors 
+
+
+### Merging diagnosis levels based on OS
+
+```{r fig.height= 10, fig.width= 10}
+
+
+# trial 2, joining NHL to ALL
+
+data$diagnosis <- data$Recipient.s.Diagnosis
+
+data$diagnosis[data$Recipient.s.Diagnosis == "Acute Myeloid Leukemia" & data$Disease.Status. == "First Complete Remission"] <- "AML CR1"
+
+data$diagnosis[data$Recipient.s.Diagnosis == "Acute Myeloid Leukemia" & data$Disease.Status. == "Second Complete Remission"] <- "AML CR2"
+
+data$diagnosis[data$Recipient.s.Diagnosis == "MPD" ] <- NA
+
+data$diagnosis[data$Recipient.s.Diagnosis == "MPAL" ] <- "AML CR1"
+
+
+data$diagnosis[data$Recipient.s.Diagnosis == "Therapy Related AML" ] <- "AML CR1"
+
+data$diagnosis[data$Recipient.s.Diagnosis == "Neuroblastoma" ] <- NA
+
+data$diagnosis[data$Recipient.s.Diagnosis == "Therapy Related ALL" ] <- "ALL"
+
+data$diagnosis[data$Recipient.s.Diagnosis == "Therapy Related MDS" ] <- "MDS"
+
+data$diagnosis[data$Recipient.s.Diagnosis == "Acute Lymphoblastic Leukemia" ] <- "ALL"
+
+data$diagnosis[data$Recipient.s.Diagnosis == "Non-hodgkin's lymphoma" ] <- "ALL"
+
+data$ff_st_nrm <- 0
+data$ff_st_nrm[data$Cause.of.Death. == "NRM"] <- 1
+data$ff_st_nrm[data$Cause.of.Death. == "Disease" | data$Cause.of.Death. == "Disease SM"] <- 2
+
+
+
+data$ff_st_rfs <- 0
+data$ff_st_rfs[data$Relapse.at.any.given.time.. == "Yes"] <- 1
+data$ff_st_rfs[data$Patient.s.status == "Dead" & data$Relapse.at.any.given.time.. == "No"]  <- 2
+
+data_d <- filter(data, !is.na(diagnosis) )
+
+survResponse <- Surv(time = data_d$os_fu,
+                  event = data_d$os_stat)
+survivalFm <- mergeFactors(response = survResponse,
+                    factor = data_d$diagnosis,
+                    family = "survival")
+
+# mergingHistory(survivalFm, showStats = TRUE) %>%
+#     kable()
+
+plot(survivalFm)
+
+```
+
+
+
+```{r}
+
+# Overall survival kaplan meier grouped by diagnosis
+
+fit<- survfit(formula = Surv(os_fu, os_stat) ~ diagnosis,data = data_d)
+
+# ggsurvplot(
+#   fit, data = data_d,
+#   # data used to fit survival curves.
+#   #surv_plot(OS_data, OS_data$OS_FU, OS_data$OS_status)
+#   risk.table = TRUE,       # show risk table.
+#   palette = "jco",
+#   pval = TRUE,             # show p-value of log-rank test.
+#   conf.int = FALSE,         # show confidence intervals for
+#   # point estimaes of survival curves.
+#   xlim = c(0,80),        # present narrower X axis, but not affect
+#   # survival estimates.
+#   break.time.by = 5,     # break X axis in time intervals by 500.
+#   ggtheme = theme_minimal(), # customize plot and risk table with a theme.
+#   risk.table.y.text.col = T, # colour risk table text annotations.
+#   risk.table.y.text = FALSE # show bars instead of names in text annotations
+#   # in legend of risk table
+# )
+
+fd <- summary(fit,times= 12)
+
+```
+
+
+
+```{r}
+
+# trial 3 
+# rfs, but without competing risk, this is an over-estimation 
+# data_d$rfs_st_no_cmp <- 0
+# data_d$rfs_st_no_cmp[data_d$Relapse.at.any.given.time.. == "Yes"] <- 1
+# 
+# survResponse <- Surv(time = data_d$rfs_fu, 
+#                   event = data_d$rfs_st_no_cmp)
+# 
+# survivalFm <- mergeFactors(response = survResponse, 
+#                     factor = data_d$diagnosis, 
+#                     family = "survival")
+#  
+#  
+#  plot(survivalFm,  nodesSpacing = "effects", colorCluster = TRUE)
+
+
+```
+
+
+
+```{r}
+
+# Merging diagnosis levels based on EFS
+
+# trial 4 
+
+data_d <- filter(data, !is.na(diagnosis) )
+
+
+# survResponse <- Surv(time = data_d$efs_fu, 
+#                   event = data_d$efs_st)
+# 
+# survivalFm <- mergeFactors(response = survResponse, 
+#                     factor = data_d$diagnosis, 
+#                     family = "survival")
+#  
+#  
+# plot(survivalFm,  nodesSpacing = "effects", colorCluster = TRUE)
+
+```
+
+
+```{r}
+
+# 1 year survival for diagnosis 
+
+km_os_efs <- function(dfr, fu, st, gp){
+  
+fit <- do.call(survfit, list(formula = Surv(fu, st) ~ gp ,data = dfr))
+ 
+plot = ggsurvplot(
+  fit, data = dfr,
+  # data used to fit survival curves.
+  #surv_plot(OS_data, OS_data$OS_FU, OS_data$OS_status)
+  risk.table = TRUE,       # show risk table.
+  palette = "jco",
+  pval = TRUE,             # show p-value of log-rank test.
+  conf.int = FALSE,         # show confidence intervals for
+  # point estimaes of survival curves.
+  xlim = c(0,80),        # present narrower X axis, but not affect
+  # survival estimates.
+  break.time.by = 5,     # break X axis in time intervals by 500.
+  ggtheme = theme_minimal(), # customize plot and risk table with a theme.
+  risk.table.y.text.col = T, # colour risk table text annotations.
+  risk.table.y.text = FALSE # show bars instead of names in text annotations
+  # in legend of risk table
+)
+return(plot)
+}
+
+
+surv_os_efs <- function(dfr, fu, st, gp, t, title){
+  
+fite <- survfit(formula = Surv(fu, st) ~ gp ,data = dfr)
+
+OS_summary_chemo <-  summary(fite,times= t)
+
+OS_years5_chemo <-  OS_summary_chemo$surv
+OS_years5_chemo <- scales::percent(OS_years5_chemo)
+
+OS_years2_chemo <- data.frame(OS_years5_chemo)
+
+OS_sum<- surv_summary(fite, data= data)
+
+OS_sum_table <- attr(OS_sum, "table")
+OS_sum_table <- OS_sum_table[,c(1,4,7)]
+colnames(OS_sum_table) <- c("subjects", "events", "median survival")
+
+table <- cbind(OS_years5_chemo, OS_sum_table)
+table <- cbind(row.names(table), table)
+colnames(table) <- c("Prognostic factor", title, "subjects", "events", "median survival")
+return(kable(table))
+}
+
+
+# km_os_efs(data_d, data_d$efs_fu, data_d$efs_st, data_d$diagnosis)
+# 
+# surv_os_efs(data_d, data_d$efs_fu, data_d$efs_st, data_d$diagnosis, 12, "EFS")
+```
+
+Thus, we agreed on grouping diagnosis into three groups as follows.. 
+
+HR = JMML, AML CR2 and HLH
+IR = MDS, AML CR1 and ALL
+LR = CML
+
+# All cause mortality
+
+### All patients
+
+```{r fig.height= 8, fig.width= 10}
+
+fit<- survfit(formula = Surv(os_fu, os_stat) ~ 1,data = data)
+
+ggsurvplot(
+  fit, data = data,
+  # data used to fit survival curves.
+  #surv_plot(OS_data, OS_data$OS_FU, OS_data$OS_status)
+  risk.table = TRUE,       # show risk table.
+  palette = "jco",
+  pval = TRUE,             # show p-value of log-rank test.
+  conf.int = FALSE,         # show confidence intervals for
+  # point estimaes of survival curves.
+  xlim = c(0,80),        # present narrower X axis, but not affect
+  # survival estimates.
+  break.time.by = 5,     # break X axis in time intervals by 500.
+  ggtheme = theme_minimal(), # customize plot and risk table with a theme.
+  risk.table.y.text.col = T, # colour risk table text annotations.
+  risk.table.y.text = FALSE # show bars instead of names in text annotations
+  # in legend of risk table
+)
+
+gp_surv <- summary(fit,times= 36)
+
+gp_surv <- scales::percent(gp_surv$surv)
+
+med_fu <- median(data$os_fu) 
+
+med_fu <- round(as.numeric(med_fu))
+
+```
+
+
+all patients 3 years overall survival percentage `r gp_surv` with a median follow up time of `r gp_surv` months
+
+### Recipient gender 3 years OS
+
+
+```{r fig.height= 8, fig.width= 10}
+
+km <- function(gp, df = data){
+  
+  fit <- do.call(survfit, list(formula = Surv(os_fu, os_stat) ~ gp , data = df))
+ 
+plot = ggsurvplot(
+  fit, data = df,
+  # data used to fit survival curves.
+  #surv_plot(OS_data, OS_data$OS_FU, OS_data$OS_status)
+  risk.table = TRUE,       # show risk table.
+  palette = "jco",
+  pval = TRUE,             # show p-value of log-rank test.
+  conf.int = FALSE,         # show confidence intervals for
+  # point estimaes of survival curve3dwrfsqxcazves.
+  xlim = c(0,80),        # present narrower X axis, but not affect
+  # survival estimates.
+  break.time.by = 5,     # break X axis in time intervals by 500.
+  ggtheme = theme_minimal(), # customize plot and risk table with a theme.
+  risk.table.y.text.col = T, # colour risk table text annotations.
+  risk.table.y.text = FALSE # show bars instead of names in text annotations
+  # in legend of risk table
+)
+return(plot)
+}
+
+km(data$rec_gndr)
+
+surv <- function(gp, t, df = data){
+  
+fite <- surv_fit(formula = Surv(os_fu, os_stat) ~ gp ,data = df)
+
+OS_summary_chemo <-  summary(fite,times= t)
+
+p_val <- surv_pvalue(fite, data = df)[4]
+
+OS_years5_chemo <-  OS_summary_chemo$surv
+OS_years5_chemo <- scales::percent(OS_years5_chemo)
+
+lower_CI <- (OS_summary_chemo$lower)*100
+upper_CI <- (OS_summary_chemo$upper)*100
+
+OS_years2_chemo <- data.frame(OS_years5_chemo)
+
+OS_sum<- surv_summary(fite, data= data)
+
+OS_sum_table <- attr(OS_sum, "table")
+
+OS_sum_table <- OS_sum_table[,c(1,4)]
+
+colnames(OS_sum_table) <- c("subjects", "events")
+
+table <- cbind(OS_years5_chemo, OS_sum_table, p_val, lower_CI, upper_CI)
+table <- cbind(row.names(table), table)
+colnames(table) <- c("Prognostic factor", "OS", "subjects", "events", "p_value","lower_CI", "upper_CI")
+
+table <- table %>% 
+  mutate(p_value = ifelse(is.na(lag(p_value)) , p_value, " "))
+return(table)
+}
+
+
+
+```
+
+
+
+### Risk (based on diagnosis) 3 years OS  
+
+```{r fig.height= 8, fig.width= 10}
+
+
+s_gender <- surv(data$rec_gndr, 36)
+
+s_gender <- cbind(c("Gender", ""), s_gender)
+
+names(s_gender)[1] <- "Risk factor"
+
+data$dg_risk <- "IR"
+
+data$dg_risk[data$diagnosis == "CML"] <- "LR"
+
+data$dg_risk[data$diagnosis %in% c("JMML", "AML CR2", "HLH")] <- "HR"
+
+data$dg_risk[is.na(data$diagnosis)] <- NA
+
+km(data$dg_risk)
+
+
+```
+
+
+### Product type 1 year OS 
+
+```{r fig.height= 8, fig.width= 10}
+
+data$prod_type_ <- data$Product.Type
+
+data$prod_type_[data$prod_type_ == "Cord Blood"] <- NA
+
+data$prod_type_[data$prod_type_ == "Bone Marrow"] <- "BM"
+
+data$prod_type_[data$prod_type_ == "Peripheral Blood"] <- "PB"
+
+
+km(data$prod_type_)
+
+prod <- surv(data$prod_type_, 12)
+
+rmdtbl(prod)
+
+```
+
+kindly note the very small number of patients in the peripheral blood group.
+
+# Overall survival 
+
+```{r}
+
+#gender
+# cox_gender <- coxph(Surv(os_fu, os_stat) ~ data$rec_gndr , data =  data) # significant 
+# 
+# cox_gender <- tidy(cox_gender, exponentiate = T)
+
+# age
+
+#the cuts 3 and 11 was not sig in multivariate 
+
+data$age_cat <-  cut(data$Age.at.time.of.SCT., c(0, 5.99, 10.99, 50 ), labels = c("< 6", "6 - 11", "11 or more" ))
+
+
+data <- within(data, data$age_cat <- relevel(data$age_cat, ref = "11 or more"))
+
+# cox_age <- coxph(Surv(os_fu, os_stat) ~ data$age_cat , data =  data) # significant (from 2 to 12 vs > 12)
+# 
+# cox_age <- tidy(cox_age, exponentiate = T)
+
+
+data$chemo_number <- as.factor(data$No..of.chemo.before.BMT)
+
+# cox_chemo_no <- coxph(Surv(os_fu, os_stat) ~ chemo_number , data =  data) # significant 
+# 
+# cox_chemo_no <- tidy(cox_chemo_no, exponentiate = T)
+
+
+# gender match 
+data$gndr_match <- "same"
+data$gndr_match[data$Donor.s.Gender. == "Female" & data$rec_gndr == "Male"] <- "FD-MR"
+data$gndr_match[data$Donor.s.Gender. == "Male" & data$rec_gndr == "Female"] <- "MD-FR"
+
+data$gndr_match <- as.factor(as.character(data$gndr_match ))
+
+data$gndr_match <- relevel(data$gndr_match, ref = "same")
+
+# cox_gndr_match1 <- coxph(Surv(os_fu, os_stat) ~ gndr_match , data =  data) # not significant
+# 
+# cox_gndr_match <- tidy(cox_gndr_match1, exponentiate = T)
+
+# ABO 
+
+data$ABO.Compitability <- as.factor(data$ABO.Compitability)
+
+levels(data$ABO.Compitability) <- c("bidirectional", "compatible", "compatible", "compatible", "major incompatability", "major incompatability", "minor incompatability", "minor incompatability", "minor incompatability")
+
+data$abo <- data$ABO.Compitability
+
+levels(data$abo) <- c("not fully compatible", "fully compatible", "not fully compatible", "not fully compatible")
+
+# cox_abo <- coxph(Surv(os_fu, os_stat) ~ abo , data =  data) # not significant
+# 
+# cox_abo <- tidy(cox_abo, exponentiate = T)
+
+# comorbidity 
+
+# cox_comorbid <- coxph(Surv(os_fu, os_stat) ~ data$CO.morbidities.before.BMT , data =  data) # not significant
+# 
+# cox_comorbid <- tidy(cox_comorbid, exponentiate = T)
+
+# I omitted the HLA matching due to small numbers in subgroups 
+
+data$hla_grp <- as.factor(data$HLA.matching)
+
+
+levels(data$hla_grp) <- c("matched", "mismatched", "mismatched", NA)
+
+# cox_hla <- coxph(Surv(os_fu, os_stat) ~ hla_grp , data =  data) # not significant
+# 
+# cox_hla <- tidy(cox_hla, exponentiate = T)
+
+# I omitted the conditioning regimen due to small numbers in subgroups 
+
+# product type
+
+# cox_prod_type <- coxph(Surv(os_fu, os_stat) ~ prod_type_ , data =  data) # significant
+# 
+# cox_prod_type <- tidy(cox_prod_type, exponentiate = T)
+
+# comorbidity after BMT 
+
+
+data$CO.morbidities.1st.100.days.After.BMT[data$CO.morbidities.1st.100.days.After.BMT == "no"] <- "No"
+
+data$CO.morbidities.1st.100.days.After.BMT <- as.factor(data$CO.morbidities.1st.100.days.After.BMT)
+
+data$CO.morbidities.1st.100.days.After.BMT <- relevel(data$CO.morbidities.1st.100.days.After.BMT, ref = "Yes")
+
+# cox_com_after <- coxph(Surv(os_fu, os_stat) ~ CO.morbidities.1st.100.days.After.BMT , data =  data) # not significant
+# 
+# cox_com_after <- tidy(cox_com_after, exponentiate = T)
+
+# vascular
+
+data$vascular <- "No"
+data$vascular[data$X.VOD. == "Yes" | data$capillary.leak.during.the.first.30.days.. == "Yes" | 
+                data$diffuse.alveolar.hemorrhage.. == "Yes" | data$microangiopathy == "Yes" | 
+                data$eng_syn == "Yes"] <- "Yes"
+
+  
+# to check # #cbind(data$X.VOD., data$capillary.leak.during.the.first.30.days.., data$diffuse.alveolar.hemorrhage.., data$microangiopathy,  data$eng_syn, data$vascular)
+
+# cox_vascular <- coxph(Surv(os_fu, os_stat) ~ vascular , data =  data) # not significant
+# 
+# cox_vascular <- tidy(cox_vascular, exponentiate = T)
+# 
+
+# VOD 
+# here the reference should be NO, since we have 8 patients only in Yes 
+
+# cox_VOD <- coxph(Surv(os_fu, os_stat) ~ data$X.VOD. , data =  data) # not significant
+# 
+# cox_VOD <- tidy(cox_VOD, exponentiate = T)
+
+# capillary leak syndrome
+
+# here again , Yes is only 13 patients 
+# cox_cap <- coxph(Surv(os_fu, os_stat) ~ data$capillary.leak.during.the.first.30.days.. , data =  data) # not significant
+# 
+# cox_cap <- tidy(cox_cap, exponentiate = T)
+
+# DAH
+
+# very few patients 
+
+# microangiopathy
+
+#very few patients 
+
+# engraftment syndrome 
+
+# cox_eng <- coxph(Surv(os_fu, os_stat) ~ data$eng_syn , data =  data) # # significant 
+# 
+# cox_eng <- tidy(cox_eng, exponentiate = T)
+# 
+# infections 
+
+
+data$infection <- "No"
+
+data$infection[data$Bacteremia...spesis == "yes" | data$CMV.viraemia == "Yes"] <- "Yes"
+
+# #cbind(data$Bacteremia...spesis, data$CMV.viraemia, data$infection)
+
+# cox_infection <- coxph(Surv(os_fu, os_stat) ~ infection , data =  data) # not significant
+# 
+# cox_infection <- tidy(cox_infection, exponentiate = T)
+# 
+# bacteremia 
+# 
+# cox_bacteremia <- coxph(Surv(os_fu, os_stat) ~ data$Bacteremia...spesis , data =  data) # not significant
+
+# cox_bacteremia <- tidy(cox_bacteremia, exponentiate = T)
+
+# CMV 
+
+# cox_cmv <- coxph(Surv(os_fu, os_stat) ~ data$CMV.viraemia , data =  data) # not significant
+
+# cox_cmv <- tidy(cox_cmv, exponentiate = T)
+
+# organ toxicity 
+
+# cox_toxicity <- coxph(Surv(os_fu, os_stat) ~ data$Organ.toxicity , data =  data) # not significant
+
+# cox_toxicity <- tidy(cox_toxicity, exponentiate = T)
+
+# gvhd general
+data$GVHD[data$GVHD == "NO"] <- "No"
+
+# cox_gvhd1 <- coxph(Surv(os_fu, os_stat) ~ GVHD , data =  data) # not significant
+# 
+# cox_gvhd <- tidy(cox_gvhd1, exponentiate = T)
+
+# gvhd type
+
+# cox_gvhd_type <- coxph(Surv(os_fu, os_stat) ~ data$GVHD..type , data =  data) # not significant
+
+# cox_gvhd_type <- tidy(cox_gvhd_type, exponentiate = T)
+
+# chronic gvhd 
+
+data$ch_gvhd[!is.na(data$Recipient.s.MRN.)] <- "No"
+data$ch_gvhd[data$GVHD..type == "Chroinc"] <- "Yes"
+data$ch_gvhd[data$GVHD..type == "A+C"] <- "Yes"
+
+# cox_ch_gvhd <- coxph(Surv(os_fu, os_stat) ~ ch_gvhd , data =  data) # not significant
+
+# cox_ch_gvhd <- tidy(cox_ch_gvhd, exponentiate = T)
+
+# uni <- rbind(cox_gender, cox_age, cox_chemo_no, cox_risk, cox_gndr_match, cox_abo, cox_ds_stat,  
+# cox_comorbid,cox_prod_type, cox_com_after,  cox_vascular,cox_VOD, cox_cap,cox_eng, cox_infection, cox_bacteremia, cox_cmv, cox_toxicity,cox_gvhd , cox_gvhd_type, cox_ch_gvhd)
+
+library(finalfit)
+
+data$CO.morbidities.1st.100.days.After.BMT <- as.factor(data$CO.morbidities.1st.100.days.After.BMT)
+
+data$infection <- as.factor(data$infection)
+
+data$CO.morbidities.before.BMT <- as.factor(data$CO.morbidities.before.BMT)
+
+data$rec_gndr <- as.factor(data$rec_gndr)
+
+
+s_diag <- surv(data$dg_risk, 36)
+s_diag <- cbind(c("Diagnosis_risk", "", ""), s_diag)
+names(s_diag)[1] <- "Risk factor"
+
+data$age_cat <-  cut(data$Age.at.time.of.SCT., c(0, 5.99, 10.99, 50 ), labels = c("< 6", "6 - 11", "11 or more" ))
+
+data <- within(data, data$age_cat <- relevel(data$age_cat, ref = "11 or more"))
+
+s_age <- surv(data$age_cat, 36)
+
+s_age <- cbind(c("Age", "", ""), s_age)
+names(s_age)[1] <- "Risk factor"
+
+
+s_gender_match <- surv(data$gndr_match, 36)
+s_gender_match <- cbind(c("Gender match", "", ""), s_gender_match)
+names(s_gender_match)[1] <- "Risk factor"
+
+s_abo <- surv(data$abo, 36)
+s_abo <- cbind(c("ABO", ""), s_abo)
+names(s_abo)[1] <- "Risk factor"
+
+
+s_comorbid_1st_100_days <- surv(data$CO.morbidities.1st.100.days.After.BMT, 36)
+s_comorbid_1st_100_days <- cbind(c("comorbid_1st_100_days", ""), s_comorbid_1st_100_days)
+names(s_comorbid_1st_100_days)[1] <- "Risk factor"
+
+
+s_vascular <- surv(data$vascular, 36)
+s_vascular <- cbind(c("vascularnosis_risk", ""), s_vascular)
+names(s_vascular)[1] <- "Risk factor"
+
+
+
+s_cmv <- surv(data$CMV.viraemia, 36)
+s_cmv <- cbind(c("CMV", ""), s_cmv)
+names(s_cmv)[1] <- "Risk factor"
+
+
+
+s_gvhd <- surv(data$GVHD, 36)
+s_gvhd <- cbind(c("GVHD", ""), s_gvhd)
+names(s_gvhd)[1] <- "Risk factor"
+
+
+s_hla_group <- surv(data$hla_grp, 36)
+s_hla_group <- cbind(c("Hla_group", ""), s_hla_group)
+names(s_hla_group)[1] <- "Risk factor"
+
+
+s_eng <- surv(data$eng_syn, 36)
+s_eng <- cbind(c("Engraftment syndrome", ""), s_eng)
+names(s_eng)[1] <- "Risk factor"
+
+survival_df <- list(s_gender, s_diag, s_age, s_gender_match, s_abo, s_comorbid_1st_100_days,  s_vascular, s_cmv, s_gvhd, s_hla_group, s_eng)
+
+survival_tables <- data.table::rbindlist(survival_df)
+
+survival_tables$`Prognostic factor` <- str_replace_all(survival_tables$`Prognostic factor`, "gp=", "")
+
+rmdtbl(survival_tables)
+```
+
+### Univariate and multivariate cox regression based on OS 
+
+```{r}
+
+foo <- c("vascular", "prod_type_", "dg_risk", "Organ.toxicity", "GVHD", "GVHD..type", "CMV.viraemia", "eng_syn", "capillary.leak.during.the.first.30.days..", "CO.morbidities.1st.100.days.After.BMT", "CO.morbidities.before.BMT", "Recipient.s.Diagnosis", "prophylaxisi")
+
+data = mutate_each(data, funs(factor), foo)
+
+explanatory = c("rec_gndr", "age_cat", "gndr_match", "abo", "dg_risk",  "CO.morbidities.before.BMT", "hla_grp", "CO.morbidities.1st.100.days.After.BMT", "vascular", "X.VOD.", "capillary.leak.during.the.first.30.days..", "eng_syn", "infection", "Bacteremia...spesis", "CMV.viraemia", "Organ.toxicity", "GVHD", "vascular")
+
+#explanatory_multi = c("age_cat", "eng_syn", "dg_risk", "vascular")
+
+explanatory_multi = c("age_cat","dg_risk", "hla_grp")
+
+dependent = "Surv(os_fu, os_stat)"
+
+
+data <- data %>%
+  mutate(
+        rec_gndr = ff_label(rec_gndr, "Recipient gender"),
+        age_cat = ff_label(age_cat, "Age"),
+        chemo_number = ff_label(chemo_number, "Number of chemotherapy"),
+        gndr_match = ff_label(gndr_match, "Gender match"),
+        dg_risk = ff_label(dg_risk, "Risk based on diagnosis"),
+        CO.morbidities.before.BMT = ff_label(CO.morbidities.before.BMT, "Co-morbidities before BMT"),
+        prod_type_ = ff_label(prod_type_, "Product type"),
+        CO.morbidities.1st.100.days.After.BMT = ff_label(CO.morbidities.1st.100.days.After.BMT, "Co-morbidities 100 days after BMT"),
+        vascular = ff_label(vascular, "Vascular complications"),
+        X.VOD. = ff_label(X.VOD., "VOD"),
+        capillary.leak.during.the.first.30.days.. = ff_label(capillary.leak.during.the.first.30.days.., "Capillary leak"),
+        eng_syn = ff_label(eng_syn, "Engraftment syndrome"),
+        CMV.viraemia = ff_label(CMV.viraemia, "CMV viraemia"),
+        Organ.toxicity = ff_label(Organ.toxicity, "Organ toxicity"),
+        GVHD = ff_label(GVHD, "GVHD"),
+        GVHD..type = ff_label(GVHD..type, "GVHD type"),
+        Recipient.s.Diagnosis = ff_label(Recipient.s.Diagnosis, "Recipient diagnosis"),
+        prophylaxisi = ff_label(prophylaxisi, "Prophylaxis")        )
+
+ 
+finalfit(data, dependent, explanatory, explanatory_multi) -> t
+
+rownames(t) <- NULL
+colnames(t)[1:3] <- c("Risk factor", "Level", "Frequency(%)")
+
+library(flextable)
+rmdtbl(t)
+
+```
+
+
+
+# Univariate and multivariate cox regression based on EFS
+
+```{r}
+
+
+dependent = "Surv(efs_fu, efs_st)"
+
+#explanatory_multi = c("age_cat", "dg_risk", "eng_syn", "infection", "hla_grp", "rec_gndr")
+
+#explanatory_multi = c("age_cat", "dg_risk", "eng_syn")
+
+explanatory_multi = c("age_cat", "dg_risk", "hla_grp")
+
+finalfit(data, dependent, explanatory, explanatory_multi) -> t
+
+rownames(t) <- NULL
+colnames(t)[1:3] <- c("Risk factor", "Level", "Frequency(%)")
+
+rmdtbl(t)
+
+```
+Vascular, engraftment syndrome, infection and GVHD should be added as time dependent 
+
+I need dates for these four events in order to be used as time dependent
+
+
+
+
+```{r}
+# Multivariate cox
+
+mult_cox <- coxph(Surv(os_fu, os_stat) ~ rec_gndr + age_cat + chemo_number + eng_syn + dg_risk, data =  data)
+
+explanatory_multi = c("age_cat", "chemo_number", "prod_type_", "eng_syn", "infection")
+
+multi_cox <- tidy(mult_cox, exponentiate = T)
+
+multi_cox <- multi_cox[, c(1, 2, 5:7)]
+
+colnames(multi_cox)[2] <- "HR"
+# 
+# kable(multi_cox, digits = 3)
+
+```
+
+
+# Forest plot
+
+
+```{r}
+
+ggforest(mult_cox, data = data, main = "All cause mortality")
+
+
+# cox assumptions
+
+
+
+# http://www.sthda.com/english/wiki/cox-model-assumptions
+
+# Testing proportional Hazards assumption
+
+#test.ph <- cox.zph(mult_cox)
+
+#test.ph
+
+# Nothing is statistically significant..
+
+
+### Testing for each factor separately
+
+#cox.zph(cox_gndr_match1)
+#cox.zph(cox_gvhd1)
+
+#Running the test for each covariate separately, gives a significant result for these 2 covariates
+
+#Gender match and gvhd... These maybe investigated later as time dependent covariates 
+
+
+# Schoenfeld test for proportional hazards assumption
+
+#ggcoxzph(test.ph)
+
+# Another graphical methods for checking proportional hazards is to plot log(-log(S(t))) vs. t or log(t) and look for parallelism. This can be done only for categorical covariates.
+
+
+#Note that, systematic departures from a horizontal line are indicative of non-proportional hazards. Here we are safe.
+
+
+# To test influential observations or outliers, we can visualize either:
+#   
+# the deviance residuals or
+# the dfbeta values
+
+#ggcoxdiagnostics(mult_cox, type = "dfbeta", linear.predictions = TRUE)
+
+
+# Specifying the argument type = "dfbeta", plots the estimated changes in the regression coefficients upon deleting each observation in turn; likewise, type="dfbetas" produces the estimated changes in the coefficients divided by their standard errors.
+
+# I can't draw a valid conclusion from here. 
+
+# It's also possible to check outliers by visualizing the deviance residuals. The deviance residual is a normalized transform of the martingale residual. These residuals should be roughtly symmetrically distributed about zero with a standard deviation of 1
+
+#ggcoxdiagnostics(mult_cox, type = "deviance",
+#                 linear.predictions = FALSE, ggtheme = theme_bw())
+
+
+#The pattern looks fairly symmetric around 0.
+
+
+# Testing non linearity
+
+# Plotting the Martingale residuals against continuous covariates is a common approach used to detect nonlinearity
+
+# Nonlinearity is not an issue for categorical variables, so we only examine plots of martingale residuals and partial residuals against a continuous variable.
+
+# Martingale residuals may present any value in the range (-INF, +1):
+
+#   A value of martinguale residuals near 1 represents individuals that "died too soon",
+# and large negative values correspond to individuals that "lived too long".
+
+#ggcoxfunctional(Surv(time, status) ~ age + log(age) + sqrt(age), data = lung)
+
+#this is not applicable here, because I don't have continuous covariates 
+
+```
+
+# cumulative incidence
+
+###  NRM 
+
+```{r}
+
+data$nrm_stat <- "cens"
+data$nrm_stat[data$Cause.of.Death. == "Disease" | data$Cause.of.Death. == "Disease SM"] <- "RM"
+data$nrm_stat[data$Cause.of.Death. == "NRM"] <- "NRM"
+
+
+data$nrm_st <- 0
+data$nrm_st[data$Cause.of.Death. == "Disease" | data$Cause.of.Death. == "Disease SM"] <- 1
+data$nrm_st[data$Cause.of.Death. == "NRM"] <- 2
+
+
+data$nrm_fu <- (data$DateofLastContactnew. - data$Date.of.Stem.Cell.Infusion.)/30.4
+
+
+# ------------------------------- Recipient gender ----------------------------------------------
+
+library(broom)
+
+cif_gender <- Cuminc(time = "nrm_fu", status = "nrm_stat", group = "rec_gndr", data = data)
+
+# cif_gender2 <- cuminc(ftime = data$nrm_fu, fstatus = data$nrm_stat, group = data$rec_gndr)
+# 
+# cif_time_gnd <- timepoints(cif_gender2, 36)
+# 
+# cif_time_gnd <- cif_time_gnd$est[c(3,4),]
+
+
+cif_est <- function(gp){
+  
+cif_gender2 <- cuminc(ftime = data$nrm_fu, fstatus = data$nrm_stat, group = gp)
+
+cif_time_gnd <- timepoints(cif_gender2, 36)
+
+cif_time_gnd <- data.frame(cif_time_gnd$est)
+
+cif_time_gnd <- rownames_to_column(cif_time_gnd)
+
+cif_time_gnd[,2] <- scales::percent(cif_time_gnd[,2])
+
+return(cif_time_gnd)
+}
+
+#cif_est(data$rec_gndr)
+
+
+ggplot(cif_gender, aes(time)) +
+  geom_step(aes(y = `CI.NRM`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "NRM by sex") + 
+  theme_classic()
+
+
+# cuminc_gender <- fitCuminc(time = data$nrm_fu,
+#                     risk = data$nrm_st,
+#                     group = data$rec_gndr,
+#                     cens = 0)
+# 
+# gender_p_value <- testCuminc(cuminc_gender) 
+# 
+# row.names(gender_p_value) <- "gender_p_value"
+
+  
+#riskTab(time = data$nrm_fu,
+        #risk = data$nrm_stat,
+        #group = data$rec_gndr,
+        #cens = "cens",
+        #title = "Number at risk")
+
+#eventTab(time = data$nrm_fu,
+         #risk = data$nrm_stat,
+         #group = data$rec_gndr,
+         #cens = "cens",
+         #title = "Number of events")
+
+# p value not significant 
+
+
+# --------------------------- Age ------------------------------------------
+
+cif_age <- Cuminc(time = "nrm_fu", status = "nrm_stat", group = "age_cat", data = data)
+
+ggplot(cif_age, aes(time)) +
+  geom_step(aes(y = `CI.NRM`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "NRM by age group") + 
+  theme_classic()
+
+# cuminc_age <- fitCuminc(time = data$nrm_fu,
+#                            risk = data$nrm_st,
+#                            group = data$age_cat,
+#                            cens = 0)
+# 
+# age_p_value <- testCuminc(cuminc_age) 
+# 
+# row.names(age_p_value) <- "age_p_value"
+# 
+# 
+# #riskTab(time = data$nrm_fu,
+#         #risk = data$nrm_stat,
+#         #group = data$age_cat,
+#         #cens = "cens",
+#         #title = "Number at risk")
+# 
+# 
+# #eventTab(time = data$nrm_fu,
+#          #risk = data$nrm_stat,
+#          #group = data$age_cat,
+#          #cens = "cens",
+#          #title = "Number of events")
+# 
+# 
+# # p value not significant 
+# cif_est(data$age_cat)
+
+
+# ---------------------- No of chemo ----------------------------------------
+
+cif_no_of_chemo <- Cuminc(time = "nrm_fu", status = "nrm_stat", group = "chemo_number", data = data)
+
+ggplot(cif_no_of_chemo, aes(time)) +
+  geom_step(aes(y = `CI.NRM`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "NRM by no_of_chemo") + 
+  theme_classic()
+
+# cuminc_no_of_chemo <- fitCuminc(time = data$nrm_fu,
+#                         risk = data$nrm_st,
+#                         group = data$chemo_number,
+#                         cens = 0)
+# 
+# no_of_chemo_p_value <- testCuminc(cuminc_no_of_chemo) 
+# 
+# row.names(no_of_chemo_p_value) <- "no_of_chemo_p_value"
+# 
+# #riskTab(time = data$nrm_fu,
+#         #risk = data$nrm_stat,
+#         #group = data$chemo_number,
+#         #cens = "cens",
+#         #title = "Number at risk")
+# 
+# 
+# #eventTab(time = data$nrm_fu,
+#          #risk = data$nrm_stat,
+#          #group = data$chemo_number,
+#          #cens = "cens",
+#          #title = "Number of events")
+# 
+# # p value not significant 
+# 
+# cif_est(data$chemo_number)
+
+# ---------------------- Diagnosis Risk ----------------------------------------
+
+
+cif_risk <- Cuminc(time = "nrm_fu", status = "nrm_stat", group = "dg_risk", data = data)
+
+ggplot(cif_risk, aes(time)) +
+  geom_step(aes(y = `CI.NRM`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "Risk") + 
+  theme_classic()
+
+# cuminc_risk <- fitCuminc(time = data$nrm_fu,
+#                         risk = data$nrm_st,
+#                         group = data$dg_risk,
+#                         cens = 0)
+# 
+# risk_p_value <- testCuminc(cuminc_risk) 
+# 
+# row.names(risk_p_value) <- "risk_p_value"
+# 
+# 
+# #riskTab(time = data$nrm_fu,
+#         #risk = data$nrm_stat,
+#         #group = data$risk,
+#         #cens = "cens",
+#         #title = "Number at risk")
+# 
+# 
+# #eventTab(time = data$nrm_fu,
+#          #risk = data$nrm_stat,
+#          #group = data$risk,
+#          #cens = "cens",
+#          #title = "Number of events")
+# 
+# # p value not significant 
+# 
+# cif_est(data$dg)
+
+# ---------------------- gender match ----------------------------------------
+
+cif_gndr_match <- Cuminc(time = "nrm_fu", status = "nrm_stat", group = "gndr_match", data = data)
+
+ggplot(cif_gndr_match, aes(time)) +
+  geom_step(aes(y = `CI.NRM`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "NRM by gndr_match") + 
+  theme_classic()
+
+# cuminc_gndr_match <- fitCuminc(time = data$nrm_fu,
+#                                 risk = data$nrm_st,
+#                                 group = data$gndr_match,
+#                                 cens = 0)
+# 
+# gndr_match_p_value <- testCuminc(cuminc_gndr_match) 
+# 
+# row.names(gndr_match_p_value) <- "gndr_match_p_value"
+# 
+# #riskTab(time = data$nrm_fu,
+#         #risk = data$nrm_stat,
+#         #group = data$gndr_match,
+#         #cens = "cens",
+#         #title = "Number at risk")
+# 
+# 
+# #eventTab(time = data$nrm_fu,
+#          #risk = data$nrm_stat,
+#          #group = data$gndr_match,
+#          #cens = "cens",
+#          #title = "Number of events")
+# 
+# # p value not significant 
+# 
+# cif_est(data$gndr_match)
+
+# ---------------------- ABO ----------------------------------------
+
+cif_abo <- Cuminc(time = "nrm_fu", status = "nrm_stat", group = "abo", data = data)
+
+ggplot(cif_abo, aes(time)) +
+  geom_step(aes(y = `CI.NRM`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "NRM by abo") + 
+  theme_classic()
+
+# cuminc_abo <- fitCuminc(time = data$nrm_fu,
+#                                risk = data$nrm_st,
+#                                group = data$abo,
+#                                cens = 0)
+# 
+# abo_p_value <- testCuminc(cuminc_abo) 
+# 
+# row.names(abo_p_value) <- "abo_p_value"
+
+#riskTab(time = data$nrm_fu,
+        # risk = data$nrm_stat,
+        # group = data$abo,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$nrm_fu,
+         # risk = data$nrm_stat,
+         # group = data$abo,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value not significant 
+
+
+# ---------------------- Disease.Status. ----------------------------------------
+# 
+# cif_ds_stat <- Cuminc(time = "nrm_fu", status = "nrm_stat", group = "ds_stat", data = data)
+# 
+# ggplot(cif_ds_stat, aes(time)) +
+#   geom_step(aes(y = `CI.NRM`, colour = group)) +
+#   labs(x = "Time (years)", y = "Proportion", title = "NRM by ds_stat") + 
+#   theme_classic()
+# 
+# cuminc_ds_stat <- fitCuminc(time = data$nrm_fu,
+#                         risk = data$nrm_st,
+#                         group = data$ds_stat,
+#                         cens = 0)
+# 
+# ds_stat_p_value <- testCuminc(cuminc_ds_stat) 
+# 
+# row.names(ds_stat_p_value) <- "ds_stat_p_value"
+# 
+# #riskTab(time = data$nrm_fu,
+#         # risk = data$nrm_stat,
+#         # group = data$ds_stat,
+#         # cens = "cens",
+#         # title = "Number at risk")
+# 
+# 
+# #eventTab(time = data$nrm_fu,
+#          # risk = data$nrm_stat,
+#          # group = data$ds_stat,
+#          # cens = "cens",
+#          # title = "Number of events")
+# 
+# # p value not significant 
+# 
+# cif_est(data$ds_stat)
+
+
+# ---------------------- comorbidity before BMT  ----------------------------------------
+
+cif_CO.morbidities.before.BMT <- Cuminc(time = "nrm_fu", status = "nrm_stat", group = "CO.morbidities.before.BMT", data = data)
+
+ggplot(cif_CO.morbidities.before.BMT, aes(time)) +
+  geom_step(aes(y = `CI.NRM`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "NRM by CO.morbidities.before.BMT") + 
+  theme_classic()
+
+# cuminc_CO.morbidities.before.BMT <- fitCuminc(time = data$nrm_fu,
+#                             risk = data$nrm_st,
+#                             group = data$CO.morbidities.before.BMT,
+#                             cens = 0)
+# 
+# co_morb_p_value <- testCuminc(cuminc_CO.morbidities.before.BMT) 
+# 
+# row.names(co_morb_p_value) <- "co_morb_p_value"
+
+#riskTab(time = data$nrm_fu,
+        # risk = data$nrm_stat,
+        # group = data$CO.morbidities.before.BMT,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$nrm_fu,
+         # risk = data$nrm_stat,
+         # group = data$CO.morbidities.before.BMT,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value not significant 
+
+
+# ---------------------- prod_type_  ----------------------------------------
+
+cif_prod_type_ <- Cuminc(time = "nrm_fu", status = "nrm_stat", group = "prod_type_", data = data)
+
+ggplot(cif_prod_type_, aes(time)) +
+  geom_step(aes(y = `CI.NRM`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "NRM by prod_type_") + 
+  theme_classic()
+# 
+# cuminc_prod_type_ <- fitCuminc(time = data$nrm_fu,
+#                                               risk = data$nrm_st,
+#                                               group = data$prod_type_,
+#                                               cens = 0)
+# 
+# prod_type_p_value <- testCuminc(cuminc_prod_type_) 
+# 
+# row.names(prod_type_p_value) <- "prod_type_p_value"
+
+#riskTab(time = data$nrm_fu,
+        # risk = data$nrm_stat,
+        # group = data$prod_type_,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$nrm_fu,
+         # risk = data$nrm_stat,
+         # group = data$prod_type_,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value significant 
+
+# cif_est(data$prod_type_)
+
+
+# ---------------------- CO.morbidities.1st.100.days.After.BMT  --------------------------------------
+
+cif_CO.morbidities.1st.100.days.After.BMT <- Cuminc(time = "nrm_fu", status = "nrm_stat", group = "CO.morbidities.1st.100.days.After.BMT", data = data)
+
+
+ggplot(cif_CO.morbidities.1st.100.days.After.BMT, aes(time)) +
+  geom_step(aes(y = `CI.NRM`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "NRM by CO.morbidities.1st.100.days.After.BMT") + 
+  theme_classic()
+
+# cuminc_CO.morbidities.1st.100.days.After.BMT <- fitCuminc(time = data$nrm_fu,
+#                                    risk = data$nrm_st,
+#                                    group = data$CO.morbidities.1st.100.days.After.BMT,
+#                                    cens = 0)
+# 
+# co_morb_1st_100_p_value <- testCuminc(cuminc_CO.morbidities.1st.100.days.After.BMT) 
+# 
+# row.names(co_morb_1st_100_p_value) <- "co_morb_1st_100_p_value"
+
+#riskTab(time = data$nrm_fu,
+        # risk = data$nrm_stat,
+        # group = data$CO.morbidities.1st.100.days.After.BMT,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$nrm_fu,
+         # risk = data$nrm_stat,
+         # group = data$CO.morbidities.1st.100.days.After.BMT,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value not significant 
+
+
+
+
+# ---------------------- vascular  --------------------------------------
+
+cif_vascular <- Cuminc(time = "nrm_fu", status = "nrm_stat", group = "vascular", data = data)
+
+ggplot(cif_vascular, aes(time)) +
+  geom_step(aes(y = `CI.NRM`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "NRM by vascular") + 
+  theme_classic()
+
+# cuminc_vascular <- fitCuminc(time = data$nrm_fu,
+#                                                           risk = data$nrm_st,
+#                                                           group = data$vascular,
+#                                                           cens = 0)
+# 
+# vascular_p_value <- testCuminc(cuminc_vascular) 
+# 
+# row.names(vascular_p_value) <- "vascular_p_value"
+
+#riskTab(time = data$nrm_fu,
+        # risk = data$nrm_stat,
+        # group = data$vascular,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$nrm_fu,
+         # risk = data$nrm_stat,
+         # group = data$vascular,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value not significant 
+
+
+
+# ---------------------- X.VOD.  --------------------------------------
+
+cif_X.VOD. <- Cuminc(time = "nrm_fu", status = "nrm_stat", group = "X.VOD.", data = data)
+
+ggplot(cif_X.VOD., aes(time)) +
+  geom_step(aes(y = `CI.NRM`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "NRM by X.VOD.") + 
+  theme_classic()
+
+# cuminc_X.VOD. <- fitCuminc(time = data$nrm_fu,
+#                              risk = data$nrm_st,
+#                              group = data$X.VOD.,
+#                              cens = 0)
+# 
+# VOD_p_value <- testCuminc(cuminc_X.VOD.) 
+# 
+# row.names(VOD_p_value) <- "VOD_p_value"
+
+#riskTab(time = data$nrm_fu,
+        # risk = data$nrm_stat,
+        # group = data$X.VOD.,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$nrm_fu,
+         # risk = data$nrm_stat,
+         # group = data$X.VOD.,
+         # cens = "cens",
+         # title = "Number of events")
+         # 
+# p value not significant 
+
+
+
+# ---------------------- capillary.leak.during.the.first.30.days..  ---------------------------------
+
+cif_capillary.leak.during.the.first.30.days.. <- Cuminc(time = "nrm_fu", status = "nrm_stat", group = "capillary.leak.during.the.first.30.days..", data = data)
+
+ggplot(cif_capillary.leak.during.the.first.30.days.., aes(time)) +
+  geom_step(aes(y = `CI.NRM`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "NRM by capillary.leak.during.the.first.30.days..") + 
+  theme_classic()
+
+# cuminc_capillary.leak.during.the.first.30.days.. <- fitCuminc(time = data$nrm_fu,
+#                            risk = data$nrm_st,
+#                            group = data$capillary.leak.during.the.first.30.days..,
+#                            cens = 0)
+# 
+# cap_p_value <- testCuminc(cuminc_capillary.leak.during.the.first.30.days..) 
+# 
+# row.names(cap_p_value) <- "cap_p_value"
+
+#riskTab(time = data$nrm_fu,
+        # risk = data$nrm_stat,
+        # group = data$capillary.leak.during.the.first.30.days..,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$nrm_fu,
+         # risk = data$nrm_stat,
+         # group = data$capillary.leak.during.the.first.30.days..,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value not significant 
+
+
+# ---------------------- Engraftment.syndrome  ---------------------------------
+
+cif_Engraftment.syndrome <- Cuminc(time = "nrm_fu", status = "nrm_stat", group = "eng_syn", data = data)
+
+ggplot(cif_Engraftment.syndrome, aes(time)) +
+  geom_step(aes(y = `CI.NRM`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "NRM by Engraftment.syndrome") + 
+  theme_classic()
+
+# cuminc_Engraftment.syndrome <- fitCuminc(time = data$nrm_fu,
+#                                                               risk = data$nrm_st,
+#                                                               group = data$eng_syn,
+#                                                               cens = 0)
+# 
+# eng_p_value <- testCuminc(cuminc_Engraftment.syndrome) 
+# 
+# row.names(eng_p_value) <- "eng_p_value"
+
+#riskTab(time = data$nrm_fu,
+        # risk = data$nrm_stat,
+        # group = data$eng_syn,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$nrm_fu,
+         # risk = data$nrm_stat,
+         # group = data$eng_syn,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value not significant 
+
+
+
+# ---------------------- Bacteremia...spesis  ---------------------------------
+
+cif_Bacteremia...spesis <- Cuminc(time = "nrm_fu", status = "nrm_stat", group = "Bacteremia...spesis", data = data)
+
+ggplot(cif_Bacteremia...spesis, aes(time)) +
+  geom_step(aes(y = `CI.NRM`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "NRM by Bacteremia...spesis") + 
+  theme_classic()
+
+# cuminc_Bacteremia...spesis <- fitCuminc(time = data$nrm_fu,
+#                                          risk = data$nrm_st,
+#                                          group = data$Bacteremia...spesis,
+#                                          cens = 0)
+# 
+# bact_p_value <- testCuminc(cuminc_Bacteremia...spesis) 
+# 
+# row.names(bact_p_value) <- "bact_p_value"
+# 
+#riskTab(time = data$nrm_fu,
+        # risk = data$nrm_stat,
+        # group = data$Bacteremia...spesis,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$nrm_fu,
+         # risk = data$nrm_stat,
+         # group = data$Bacteremia...spesis,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value not significant 
+
+
+
+# ---------------------- CMV.viraemia  ---------------------------------
+
+cif_CMV.viraemia <- Cuminc(time = "nrm_fu", status = "nrm_stat", group = "CMV.viraemia", data = data)
+
+ggplot(cif_CMV.viraemia, aes(time)) +
+  geom_step(aes(y = `CI.NRM`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "NRM by CMV.viraemia") + 
+  theme_classic()
+
+# cuminc_CMV.viraemia <- fitCuminc(time = data$nrm_fu,
+#                                         risk = data$nrm_st,
+#                                         group = data$CMV.viraemia,
+#                                         cens = 0)
+# 
+# cmv_p_value <- testCuminc(cuminc_CMV.viraemia) 
+# 
+# row.names(cmv_p_value) <- "cmv_p_value"
+
+
+#riskTab(time = data$nrm_fu,
+        # risk = data$nrm_stat,
+        # group = data$CMV.viraemia,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$nrm_fu,
+         # risk = data$nrm_stat,
+         # group = data$CMV.viraemia,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value not significant 
+
+
+# ---------------------- Organ.toxicity  ---------------------------------
+
+cif_Organ.toxicity <- Cuminc(time = "nrm_fu", status = "nrm_stat", group = "Organ.toxicity", data = data)
+
+ggplot(cif_Organ.toxicity, aes(time)) +
+  geom_step(aes(y = `CI.NRM`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "NRM by Organ.toxicity") + 
+  theme_classic()
+
+# cuminc_Organ.toxicity <- fitCuminc(time = data$nrm_fu,
+#                                  risk = data$nrm_st,
+#                                  group = data$Organ.toxicity,
+#                                  cens = 0)
+# 
+# organ_tox_p_value <- testCuminc(cuminc_Organ.toxicity) 
+# 
+# row.names(organ_tox_p_value) <- "organ_tox_p_value"
+
+#riskTab(time = data$nrm_fu,
+        # risk = data$nrm_stat,
+        # group = data$Organ.toxicity,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$nrm_fu,
+         # risk = data$nrm_stat,
+         # group = data$Organ.toxicity,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value not significant 
+
+
+
+# ---------------------- GVHD  ---------------------------------
+
+cif_GVHD <- Cuminc(time = "nrm_fu", status = "nrm_stat", group = "GVHD", data = data)
+
+
+ggplot(cif_GVHD, aes(time)) +
+  geom_step(aes(y = `CI.NRM`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "NRM by GVHD") + 
+  theme_classic()
+
+# cuminc_GVHD <- fitCuminc(time = data$nrm_fu,
+#                                    risk = data$nrm_st,
+#                                    group = data$GVHD,
+#                                    cens = 0)
+# 
+# GVHD_p_value <- testCuminc(cuminc_GVHD) 
+# 
+# row.names(GVHD_p_value) <- "GVHD_p_value"
+
+#riskTab(time = data$nrm_fu,
+        # risk = data$nrm_stat,
+        # group = data$GVHD,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$nrm_fu,
+         # risk = data$nrm_stat,
+         # group = data$GVHD,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value significant 
+
+
+# ---------------------- GVHD..type  ---------------------------------
+
+cif_GVHD..type <- Cuminc(time = "nrm_fu", status = "nrm_stat", group = "GVHD..type", data = data)
+
+ggplot(cif_GVHD..type, aes(time)) +
+  geom_step(aes(y = `CI.NRM`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "NRM by GVHD..type") + 
+  theme_classic()
+
+# cuminc_GVHD..type <- fitCuminc(time = data$nrm_fu,
+#                          risk = data$nrm_st,
+#                          group = data$GVHD..type,
+#                          cens = 0)
+# 
+# GVHD_type_p_value <- testCuminc(cuminc_GVHD..type) 
+# 
+# row.names(GVHD_type_p_value) <- "GVHD_type_p_value"
+
+#riskTab(time = data$nrm_fu,
+        # risk = data$nrm_stat,
+        # group = data$GVHD..type,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$nrm_fu,
+         # risk = data$nrm_stat,
+         # group = data$GVHD..type,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value not significant 
+
+
+# ---------------------- ch_gvhd  ---------------------------------
+
+cif_ch_gvhd <- Cuminc(time = "nrm_fu", status = "nrm_stat", group = "ch_gvhd", data = data)
+
+ggplot(cif_ch_gvhd, aes(time)) +
+  geom_step(aes(y = `CI.NRM`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "NRM by ch_gvhd") + 
+  theme_classic()
+
+
+# cuminc_ch_gvhd <- fitCuminc(time = data$nrm_fu,
+#                          risk = data$nrm_st,
+#                          group = data$ch_gvhd,
+#                          cens = 0)
+# 
+# ch_gvhd_p_value <- testCuminc(cuminc_ch_gvhd) 
+# 
+# row.names(ch_gvhd_p_value) <- "chronic_gvhd_p_value"
+# 
+# #riskTab(time = data$nrm_fu,
+#         # risk = data$nrm_stat,
+#         # group = data$ch_gvhd,
+#         # cens = "cens",
+#         # title = "Number at risk")
+# 
+# 
+# #eventTab(time = data$nrm_fu,
+#          # risk = data$nrm_stat,
+#          # group = data$ch_gvhd,
+#          # cens = "cens",
+#          # title = "Number of events")
+# 
+# # p value not significant 
+# 
+# 
+# cum <- rbind(gender_p_value, age_p_value, no_of_chemo_p_value, risk_p_value, gndr_match_p_value, abo_p_value, co_morb_p_value, prod_type_p_value, co_morb_1st_100_p_value, vascular_p_value, VOD_p_value, cap_p_value, eng_p_value, bact_p_value, cmv_p_value, organ_tox_p_value, GVHD_p_value, GVHD_type_p_value, ch_gvhd_p_value)
+# 
+# cum <- rownames_to_column(cum)
+# 
+# colnames(cum) <- c("Item", "RM", "NRM")
+
+# p-values for RM and NRM
+
+#rmdtbl(cum)
+
+```
+
+
+```{r}
+
+data_d <- filter(data, !is.na(diagnosis) )
+
+explanatory_nrm = c("rec_gndr", "age_cat", "gndr_match", "abo", "dg_risk",  "CO.morbidities.before.BMT",  "CO.morbidities.1st.100.days.After.BMT", "hla_grp", "vascular", "infection", "Bacteremia...spesis", "CMV.viraemia", "Organ.toxicity", "GVHD", "ch_gvhd")
+
+
+# explanatory = c("rec_gndr"
+# , "age_cat", "dg_risk"
+# , "gndr_match"
+# , "abo"
+# , "CO.morbidities.before.BMT"
+# , "hla_grp"
+# , "CO.morbidities.1st.100.days.After.BMT", "vascular",  "Bacteremia...spesis", "CMV.viraemia"
+# , "Organ.toxicity","ch_gvhd"
+# , "GVHD")
+
+dependent_crr_nrm = c("Surv(nrm_fu, ff_st_nrm)")
+
+data_d %>%
+  summary_factorlist(dependent_crr_nrm, explanatory_nrm, column = TRUE, fit_id = TRUE) %>%
+  ff_merge(
+    data_d %>%
+      crruni(dependent_crr_nrm, explanatory_nrm) %>%
+      fit2df(estimate_suffix = " (competing risks univariable)")
+    ) %>%
+  select(-fit_id, -index) %>% 
+  remove_intercept() %>% 
+  rmdtbl()
+
+# I omitted VOD, capillary leak and engraftment syndrome, since no ebent (NRM) occured in those with these risk factors 
+
+
+```
+
+
+#  RFS 
+
+```{r}
+
+data$rfs_fu <- ymd("4000,1,1")
+
+data$rfs_fu[!is.na(data$Relapse.at.day.)] <- as.Date(data$Date.of.Stem.Cell.Infusion.[!is.na(data$Relapse.at.day.)]) + data$Relapse.at.day.[!is.na(data$Relapse.at.day.)]
+
+
+data$rfs_fu[data$rfs_fu == ymd("4000,1,1")] <- data$DateofLastContactnew.[data$rfs_fu == ymd("4000,1,1")]
+
+data$rfs_fu <- as.POSIXct(data$rfs_fu)
+
+data$rfs_fu <- as.double(data$rfs_fu - data$Date.of.Stem.Cell.Infusion., units = 'days')/30.4
+
+# to check     n <- data.frame(data$rfs_fu, data$Date.of.Stem.Cell.Infusion., data$Relapse.at.day.)
+
+
+data$rfs_stat <- "cens"
+data$rfs_stat[data$Relapse.at.any.given.time.. == "Yes"] <- "rfs"
+data$rfs_stat[data$Patient.s.status == "Dead" & data$Relapse.at.any.given.time.. == "No"]  <- "Dead"
+
+
+
+data$rfs_st <- 0
+data$rfs_st[data$Relapse.at.any.given.time.. == "Yes"] <- 2
+data$rfs_st[data$Patient.s.status == "Dead" & data$Relapse.at.any.given.time.. == "No"]  <- 1
+
+
+
+
+rfs_est <- function(gp){
+  
+cif_gender2 <- cuminc(ftime = data$rfs_fu, fstatus = data$rfs_stat, group = gp)
+
+cif_time_gnd <- timepoints(cif_gender2, 36)
+
+cif_time_gnd <- data.frame(cif_time_gnd$est)
+
+cif_time_gnd <- rownames_to_column(cif_time_gnd)
+
+cif_time_gnd[,2] <- scales::percent(cif_time_gnd[,2])
+
+return(cif_time_gnd)
+}
+
+
+# ------------------------------- Recipient gender ----------------------------------------------
+
+rfs_gender <- Cuminc(time = "rfs_fu", status = "rfs_stat", group = "rec_gndr", data = data)
+
+
+ggplot(rfs_gender, aes(time)) +
+  geom_step(aes(y = `CI.rfs`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "rfs by sex") + 
+  theme_classic()
+
+# cuminc_rfs_gender <- fitCuminc(time = data$rfs_fu,
+#                            risk = data$rfs_st,
+#                            group = data$rec_gndr,
+#                            cens = 0)
+# 
+# gender_p_value <- testCuminc(cuminc_rfs_gender) 
+# 
+# row.names(gender_p_value) <- "gender_p_value"
+# 
+# 
+# #gender_p_value
+# 
+# #riskTab(time = data$rfs_fu,
+#         # risk = data$rfs_stat,
+#         # group = data$rec_gndr,
+#         # cens = "cens",
+#         # title = "Number at risk")
+# 
+# 
+# #eventTab(time = data$rfs_fu,
+#          # risk = data$rfs_stat,
+#          # group = data$rec_gndr,
+#          # cens = "cens",
+#          # title = "Number of events")
+# 
+# 
+# # p value not significant 
+# 
+# rfs_est(data$rec_gndr)
+
+
+# --------------------------- Age ------------------------------------------
+
+rfs_age <- Cuminc(time = "rfs_fu", status = "rfs_stat", group = "age_cat", data = data)
+
+ggplot(rfs_age, aes(time)) +
+  geom_step(aes(y = `CI.rfs`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "rfs by age group") + 
+  theme_classic()
+
+# cuminc_rfs_age <- fitCuminc(time = data$rfs_fu,
+#                         risk = data$rfs_st,
+#                         group = data$age_cat,
+#                         cens = 0)
+# 
+# #testCuminc(cuminc_rfs_age) 
+# 
+# age_p_value <- testCuminc(cuminc_rfs_age) 
+# 
+# row.names(age_p_value) <- "age_p_value"
+# 
+# #age_p_value
+# 
+# #riskTab(time = data$rfs_fu,
+#         # risk = data$rfs_stat,
+#         # group = data$age_cat,
+#         # cens = "cens",
+#         # title = "Number at risk")
+# 
+# 
+# #eventTab(time = data$rfs_fu,
+#          # risk = data$rfs_stat,
+#          # group = data$age_cat,
+#          # cens = "cens",
+#          # title = "Number of events")
+# 
+# 
+# 
+# # p value significant 
+# 
+# rfs_est(data$age_cat)
+
+
+# ---------------------- No of chemo ----------------------------------------
+
+# rfs_no_of_chemo <- Cuminc(time = "rfs_fu", status = "rfs_stat", group = "chemo_number", data = data)
+# 
+# 
+# ggplot(rfs_no_of_chemo, aes(time)) +
+#   geom_step(aes(y = `CI.rfs`, colour = group)) +
+#   labs(x = "Time (years)", y = "Proportion", title = "rfs by no_of_chemo") + 
+#   theme_classic()
+
+# cuminc_rfs_no_of_chemo <- fitCuminc(time = data$rfs_fu,
+#                                 risk = data$rfs_st,
+#                                 group = data$chemo_number,
+#                                 cens = 0)
+
+#testCuminc(cuminc_rfs_no_of_chemo) 
+
+# no_of_chemo_p_value <- testCuminc(cuminc_rfs_no_of_chemo) 
+# 
+# row.names(no_of_chemo_p_value) <- "no_of_chemo_p_value"
+
+#no_of_chemo_p_value
+
+#riskTab(time = data$rfs_fu,
+        # risk = data$rfs_stat,
+        # group = data$chemo_number,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$rfs_fu,
+         # risk = data$rfs_stat,
+         # group = data$chemo_number,
+         # cens = "cens",
+         # title = "Number of events")
+
+
+# p value significant 
+
+# ---------------------- Risk ----------------------------------------
+
+
+rfs_risk <- Cuminc(time = "rfs_fu", status = "rfs_stat", group = "dg_risk", data = data)
+
+ggplot(rfs_risk, aes(time)) +
+  geom_step(aes(y = `CI.rfs`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "Risk") + 
+  theme_classic()
+
+# cuminc_rfs_risk <- fitCuminc(time = data$rfs_fu,
+#                         risk = data$rfs_st,
+#                         group = data$dg_risk,
+#                         cens = 0)
+# 
+# #testCuminc(cuminc_rfs_risk) 
+# 
+# risk_p_value <- testCuminc(cuminc_rfs_risk) 
+# 
+# row.names(risk_p_value) <- "risk_p_value"
+
+
+#risk_p_value
+#riskTab(time = data$rfs_fu,
+        # risk = data$rfs_stat,
+        # group = data$risk,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$rfs_fu,
+         # risk = data$rfs_stat,
+         # group = data$risk,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value not significant 
+
+# rfs_est(data$dg_risk)
+
+
+# ---------------------- gender match ----------------------------------------
+
+rfs_gndr_match <- Cuminc(time = "rfs_fu", status = "rfs_stat", group = "gndr_match", data = data)
+
+ggplot(rfs_gndr_match, aes(time)) +
+  geom_step(aes(y = `CI.rfs`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "rfs by gndr_match") + 
+  theme_classic()
+
+# cuminc_rfs_gndr_match <- fitCuminc(time = data$rfs_fu,
+#                                risk = data$rfs_st,
+#                                group = data$gndr_match,
+#                                cens = 0)
+# 
+# gndr_match_p_value <- testCuminc(cuminc_rfs_gndr_match) 
+# 
+# row.names(gndr_match_p_value) <- "gndr_match_p_value"
+
+
+#gndr_match_p_value
+
+#riskTab(time = data$rfs_fu,
+        # risk = data$rfs_stat,
+        # group = data$gndr_match,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$rfs_fu,
+         # risk = data$rfs_stat,
+         # group = data$gndr_match,
+         # cens = "cens",
+         # title = "Number of events")
+
+
+# p value not significant 
+
+# ---------------------- ABO ----------------------------------------
+
+rfs_abo <- Cuminc(time = "rfs_fu", status = "rfs_stat", group = "abo", data = data)
+
+ggplot(rfs_abo, aes(time)) +
+  geom_step(aes(y = `CI.rfs`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "rfs by abo") + 
+  theme_classic()
+
+# cuminc_rfs_abo <- fitCuminc(time = data$rfs_fu,
+#                         risk = data$rfs_st,
+#                         group = data$abo,
+#                         cens = 0)
+
+#testCuminc(cuminc_rfs_abo) 
+
+# abo_p_value <- testCuminc(cuminc_rfs_abo) 
+# 
+# 
+# row.names(abo_p_value) <- "abo_p_value"
+
+#abo_p_value
+#riskTab(time = data$rfs_fu,
+        # risk = data$rfs_stat,
+        # group = data$abo,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$rfs_fu,
+         # risk = data$rfs_stat,
+         # group = data$abo,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value not significant 
+
+
+# ---------------------- Disease.Status. ----------------------------------------
+
+# rfs_ds_stat <- Cuminc(time = "rfs_fu", status = "rfs_stat", group = "ds_stat", data = data)
+# 
+# 
+# ggplot(rfs_ds_stat, aes(time)) +
+#   geom_step(aes(y = `CI.rfs`, colour = group)) +
+#   labs(x = "Time (years)", y = "Proportion", title = "rfs by ds_stat") + 
+#   theme_classic()
+# 
+# cuminc_rfs_ds_stat <- fitCuminc(time = data$rfs_fu,
+#                             risk = data$rfs_st,
+#                             group = data$ds_stat,
+#                             cens = 0)
+# 
+# #testCuminc(cuminc_rfs_ds_stat) 
+# 
+# ds_stat_p_value <- testCuminc(cuminc_rfs_ds_stat) 
+# 
+# row.names(ds_stat_p_value) <- "ds_stat_p_value"
+# 
+# #ds_stat_p_value
+# 
+# #riskTab(time = data$rfs_fu,
+#         # risk = data$rfs_stat,
+#         # group = data$ds_stat,
+#         # cens = "cens",
+#         # title = "Number at risk")
+# 
+# 
+# #eventTab(time = data$rfs_fu,
+#          # risk = data$rfs_stat,
+#          # group = data$ds_stat,
+#          # cens = "cens",
+#          # title = "Number of events")
+# 
+# # p value significant 
+# 
+# rfs_est(data$ds_stat)
+
+
+# ---------------------- comorbidity before BMT  ----------------------------------------
+
+rfs_CO.morbidities.before.BMT <- Cuminc(time = "rfs_fu", status = "rfs_stat", group = "CO.morbidities.before.BMT", data = data)
+
+ggplot(rfs_CO.morbidities.before.BMT, aes(time)) +
+  geom_step(aes(y = `CI.rfs`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "rfs by CO.morbidities.before.BMT") + 
+  theme_classic()
+
+# cuminc_rfs_CO.morbidities.before.BMT <- fitCuminc(time = data$rfs_fu,
+#                                               risk = data$rfs_st,
+#                                               group = data$CO.morbidities.before.BMT,
+#                                               cens = 0)
+# 
+# #testCuminc(cuminc_rfs_CO.morbidities.before.BMT) 
+# 
+# co_morb_p_value <- testCuminc(cuminc_rfs_CO.morbidities.before.BMT) 
+# 
+# row.names(co_morb_p_value) <- "co_morb_p_value"
+
+#co_morb_p_value
+#riskTab(time = data$rfs_fu,
+        # risk = data$rfs_stat,
+        # group = data$CO.morbidities.before.BMT,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$rfs_fu,
+         # risk = data$rfs_stat,
+         # group = data$CO.morbidities.before.BMT,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value not significant 
+
+
+# ---------------------- prod_type_  ----------------------------------------
+
+rfs_prod_type_ <- Cuminc(time = "rfs_fu", status = "rfs_stat", group = "prod_type_", data = data)
+
+ggplot(rfs_prod_type_, aes(time)) +
+  geom_step(aes(y = `CI.rfs`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "rfs by prod_type_") + 
+  theme_classic()
+
+# cuminc_rfs_prod_type_ <- fitCuminc(time = data$rfs_fu,
+#                                    risk = data$rfs_st,
+#                                    group = data$prod_type_,
+#                                    cens = 0)
+# 
+# #testCuminc(cuminc_rfs_prod_type_) 
+# 
+# prod_type_p_value <- testCuminc(cuminc_rfs_prod_type_) 
+# 
+# row.names(prod_type_p_value) <- "prod_type_p_value"
+# 
+# #prod_type_p_value
+# 
+# #riskTab(time = data$rfs_fu,
+#         # risk = data$rfs_stat,
+#         # group = data$prod_type_,
+#         # cens = "cens",
+#         # title = "Number at risk")
+# 
+# 
+# #eventTab(time = data$rfs_fu,
+#          # risk = data$rfs_stat,
+#          # group = data$prod_type_,
+#          # cens = "cens",
+#          # title = "Number of events")
+# 
+# # p value not significant 
+# 
+# rfs_est(data$prod_type_)
+
+# ---------------------- CO.morbidities.1st.100.days.After.BMT -----------------------------------
+
+rfs_CO.morbidities.1st.100.days.After.BMT <- Cuminc(time = "rfs_fu", status = "rfs_stat", group = "CO.morbidities.1st.100.days.After.BMT", data = data)
+
+ggplot(rfs_CO.morbidities.1st.100.days.After.BMT, aes(time)) +
+  geom_step(aes(y = `CI.rfs`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "rfs by CO.morbidities.1st.100.days.After.BMT") + 
+  theme_classic()
+
+# cuminc_rfs_CO.morbidities.1st.100.days.After.BMT <- fitCuminc(time = data$rfs_fu,
+#                                                           risk = data$rfs_st,
+#                                                           group = data$CO.morbidities.1st.100.days.After.BMT,
+#                                                           cens = 0)
+# 
+# #testCuminc(cuminc_rfs_CO.morbidities.1st.100.days.After.BMT) 
+# 
+# co_morb_1st_100_p_value <- testCuminc(cuminc_rfs_CO.morbidities.1st.100.days.After.BMT) 
+# 
+# row.names(co_morb_1st_100_p_value) <- "co_morb_1st_100_p_value"
+
+#co_morb_1st_100_p_value
+#riskTab(time = data$rfs_fu,
+        # risk = data$rfs_stat,
+        # group = data$CO.morbidities.1st.100.days.After.BMT,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$rfs_fu,
+         # risk = data$rfs_stat,
+         # group = data$CO.morbidities.1st.100.days.After.BMT,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value not significant 
+
+
+
+
+# ---------------------- vascular  --------------------------------------
+
+rfs_vascular <- Cuminc(time = "rfs_fu", status = "rfs_stat", group = "vascular", data = data)
+
+ggplot(rfs_vascular, aes(time)) +
+  geom_step(aes(y = `CI.rfs`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "rfs by vascular") + 
+  theme_classic()
+
+# cuminc_rfs_vascular <- fitCuminc(time = data$rfs_fu,
+#                              risk = data$rfs_st,
+#                              group = data$vascular,
+#                              cens = 0)
+# 
+# #testCuminc(cuminc_rfs_vascular) 
+# 
+# vascular_p_value <- testCuminc(cuminc_rfs_vascular) 
+# 
+# row.names(vascular_p_value) <- "vascular_p_value"
+
+#vascular_p_value
+
+#riskTab(time = data$rfs_fu,
+        # risk = data$rfs_stat,
+        # group = data$vascular,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$rfs_fu,
+         # risk = data$rfs_stat,
+         # group = data$vascular,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value not significant 
+
+
+
+# ---------------------- X.VOD.  --------------------------------------
+
+rfs_X.VOD. <- Cuminc(time = "rfs_fu", status = "rfs_stat", group = "X.VOD.", data = data)
+
+ggplot(rfs_X.VOD., aes(time)) +
+  geom_step(aes(y = `CI.rfs`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "rfs by X.VOD.") + 
+  theme_classic()
+
+# cuminc_rfs_X.VOD. <- fitCuminc(time = data$rfs_fu,
+#                            risk = data$rfs_st,
+#                            group = data$X.VOD.,
+#                            cens = 0)
+# 
+# #testCuminc(cuminc_rfs_X.VOD.) 
+# 
+# VOD_p_value <- testCuminc(cuminc_rfs_X.VOD.) 
+# 
+# row.names(VOD_p_value) <- "VOD_p_value"
+
+#VOD_p_value
+
+#riskTab(time = data$rfs_fu,
+        # risk = data$rfs_stat,
+        # group = data$X.VOD.,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$rfs_fu,
+         # risk = data$rfs_stat,
+         # group = data$X.VOD.,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value not significant 
+
+
+
+# ---------------------- capillary.leak.during.the.first.30.days..  ---------------------------------
+
+rfs_capillary.leak.during.the.first.30.days.. <- Cuminc(time = "rfs_fu", status = "rfs_stat", group = "capillary.leak.during.the.first.30.days..", data = data)
+
+ggplot(rfs_capillary.leak.during.the.first.30.days.., aes(time)) +
+  geom_step(aes(y = `CI.rfs`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "rfs by capillary.leak.during.the.first.30.days..") + 
+  theme_classic()
+
+# cuminc_rfs_capillary.leak.during.the.first.30.days.. <- fitCuminc(time = data$rfs_fu,
+#                                                               risk = data$rfs_st,
+#                                                               group = data$capillary.leak.during.the.first.30.days..,
+#                                                               cens = 0)
+# 
+# #testCuminc(cuminc_rfs_capillary.leak.during.the.first.30.days..) 
+# 
+# cap_p_value <- testCuminc(cuminc_rfs_capillary.leak.during.the.first.30.days..) 
+# 
+# row.names(cap_p_value) <- "cap_p_value"
+
+#cap_p_value
+
+#riskTab(time = data$rfs_fu,
+        # risk = data$rfs_stat,
+        # group = data$capillary.leak.during.the.first.30.days..,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$rfs_fu,
+         # risk = data$rfs_stat,
+         # group = data$capillary.leak.during.the.first.30.days..,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value not significant 
+
+
+# ---------------------- Engraftment.syndrome  ---------------------------------
+
+rfs_Engraftment.syndrome <- Cuminc(time = "rfs_fu", status = "rfs_stat", group = "eng_syn", data = data)
+
+ggplot(rfs_Engraftment.syndrome, aes(time)) +
+  geom_step(aes(y = `CI.rfs`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "rfs by Engraftment.syndrome") + 
+  theme_classic()
+
+# cuminc_rfs_Engraftment.syndrome <- fitCuminc(time = data$rfs_fu,
+#                                          risk = data$rfs_st,
+#                                          group = data$eng_syn,
+#                                          cens = 0)
+
+#testCuminc(cuminc_rfs_Engraftment.syndrome) 
+
+# eng_p_value <- testCuminc(cuminc_rfs_Engraftment.syndrome) 
+# 
+# row.names(eng_p_value) <- "eng_p_value"
+
+#eng_p_value
+#riskTab(time = data$rfs_fu,
+        # risk = data$rfs_stat,
+        # group = data$eng_syn,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$rfs_fu,
+         # risk = data$rfs_stat,
+         # group = data$eng_syn,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value significant 
+
+
+
+# ---------------------- Bacteremia...spesis  ---------------------------------
+
+rfs_Bacteremia...spesis <- Cuminc(time = "rfs_fu", status = "rfs_stat", group = "Bacteremia...spesis", data = data)
+
+ggplot(rfs_Bacteremia...spesis, aes(time)) +
+  geom_step(aes(y = `CI.rfs`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "rfs by Bacteremia...spesis") + 
+  theme_classic()
+
+# cuminc_rfs_Bacteremia...spesis <- fitCuminc(time = data$rfs_fu,
+#                                         risk = data$rfs_st,
+#                                         group = data$Bacteremia...spesis,
+#                                         cens = 0)
+# 
+# #testCuminc(cuminc_rfs_Bacteremia...spesis) 
+# 
+# bact_p_value <- testCuminc(cuminc_rfs_Bacteremia...spesis) 
+# 
+# row.names(bact_p_value) <- "bact_p_value"
+
+#bact_p_value
+
+#riskTab(time = data$rfs_fu,
+        # risk = data$rfs_stat,
+        # group = data$Bacteremia...spesis,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$rfs_fu,
+         # risk = data$rfs_stat,
+         # group = data$Bacteremia...spesis,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value not significant 
+
+
+
+# ---------------------- CMV.viraemia  ---------------------------------
+
+rfs_CMV.viraemia <- Cuminc(time = "rfs_fu", status = "rfs_stat", group = "CMV.viraemia", data = data)
+
+ggplot(rfs_CMV.viraemia, aes(time)) +
+  geom_step(aes(y = `CI.rfs`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "rfs by CMV.viraemia") + 
+  theme_classic()
+
+# cuminc_rfs_CMV.viraemia <- fitCuminc(time = data$rfs_fu,
+#                                  risk = data$rfs_st,
+#                                  group = data$CMV.viraemia,
+#                                  cens = 0)
+
+#testCuminc(cuminc_rfs_CMV.viraemia) 
+
+# cmv_p_value <- testCuminc(cuminc_rfs_CMV.viraemia) 
+# 
+# row.names(cmv_p_value) <- "cmv_p_value"
+
+#cmv_p_value
+
+#riskTab(time = data$rfs_fu,
+        # risk = data$rfs_stat,
+        # group = data$CMV.viraemia,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$rfs_fu,
+         # risk = data$rfs_stat,
+         # group = data$CMV.viraemia,
+         # cens = "cens",
+         # title = "Number of events")
+
+
+# p value significant 
+
+
+# ---------------------- Organ.toxicity  ---------------------------------
+
+rfs_Organ.toxicity <- Cuminc(time = "rfs_fu", status = "rfs_stat", group = "Organ.toxicity", data = data)
+
+ggplot(rfs_Organ.toxicity, aes(time)) +
+  geom_step(aes(y = `CI.rfs`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "rfs by Organ.toxicity") + 
+  theme_classic()
+
+# cuminc_rfs_Organ.toxicity <- fitCuminc(time = data$rfs_fu,
+#                                    risk = data$rfs_st,
+#                                    group = data$Organ.toxicity,
+#                                    cens = 0)
+
+#testCuminc(cuminc_rfs_Organ.toxicity) 
+
+# organ_tox_p_value <- testCuminc(cuminc_rfs_Organ.toxicity) 
+# 
+# row.names(organ_tox_p_value) <- "organ_tox_p_value"
+
+#organ_tox_p_value
+#riskTab(time = data$rfs_fu,
+        # risk = data$rfs_stat,
+        # group = data$Organ.toxicity,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$rfs_fu,
+         # risk = data$rfs_stat,
+         # group = data$Organ.toxicity,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value not significant 
+
+
+
+# ---------------------- GVHD  ---------------------------------
+
+
+rfs_GVHD <- Cuminc(time = "rfs_fu", status = "rfs_stat", group = "GVHD", data = data)
+
+ggplot(rfs_GVHD, aes(time)) +
+  geom_step(aes(y = `CI.rfs`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "rfs by GVHD") + 
+  theme_classic()
+
+# cuminc_rfs_GVHD <- fitCuminc(time = data$rfs_fu,
+#                          risk = data$rfs_st,
+#                          group = data$GVHD,
+#                          cens = 0)
+
+#testCuminc(cuminc_rfs_GVHD)
+
+# GVHD_p_value <- testCuminc(cuminc_rfs_GVHD) 
+# 
+# row.names(GVHD_p_value) <- "GVHD_p_value"
+
+#GVHD_p_value
+#riskTab(time = data$rfs_fu,
+        # risk = data$rfs_stat,
+        # group = data$GVHD,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$rfs_fu,
+         # risk = data$rfs_stat,
+         # group = data$GVHD,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value not significant 
+
+
+# ---------------------- GVHD..type  ---------------------------------
+
+
+rfs_GVHD..type <- Cuminc(time = "rfs_fu", status = "rfs_stat", group = "GVHD..type", data = data)
+
+ggplot(rfs_GVHD..type, aes(time)) +
+  geom_step(aes(y = `CI.rfs`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "rfs by GVHD..type") + 
+  theme_classic()
+
+# cuminc_rfs_GVHD..type <- fitCuminc(time = data$rfs_fu,
+#                                risk = data$rfs_st,
+#                                group = data$GVHD..type,
+#                                cens = 0)
+
+#testCuminc(cuminc_rfs_GVHD..type)
+
+# GVHD_type_p_value <- testCuminc(cuminc_rfs_GVHD..type) 
+# 
+# row.names(GVHD_type_p_value) <- "GVHD_type_p_value"
+
+#GVHD_type_p_value
+#riskTab(time = data$rfs_fu,
+        # risk = data$rfs_stat,
+        # group = data$GVHD..type,
+        # cens = "cens",
+        # title = "Number at risk")
+
+
+#eventTab(time = data$rfs_fu,
+         # risk = data$rfs_stat,
+         # group = data$GVHD..type,
+         # cens = "cens",
+         # title = "Number of events")
+
+# p value not significant 
+
+
+
+# ---------------------- ch_gvhd  ---------------------------------
+
+
+rfs_ch_gvhd <- Cuminc(time = "rfs_fu", status = "rfs_stat", group = "ch_gvhd", data = data)
+
+ggplot(rfs_ch_gvhd, aes(time)) +
+  geom_step(aes(y = `CI.rfs`, colour = group)) +
+  labs(x = "Time (years)", y = "Proportion", title = "rfs by ch_gvhd") + 
+  theme_classic()
+
+# cuminc_rfs_ch_gvhd <- fitCuminc(time = data$rfs_fu,
+#                                risk = data$rfs_st,
+#                                group = data$ch_gvhd,
+#                                cens = 0)
+# 
+# #testCuminc(cuminc_rfs_ch_gvhd)
+# 
+# ch_gvhd_p_value <- testCuminc(cuminc_rfs_ch_gvhd) 
+# 
+# row.names(ch_gvhd_p_value) <- "ch_gvhd_p_value"
+# 
+# #GVHD_type_p_value
+# #riskTab(time = data$rfs_fu,
+#         # risk = data$rfs_stat,
+#         # group = data$ch_gvhd,
+#         # cens = "cens",
+#         # title = "Number at risk")
+# 
+# 
+# #eventTab(time = data$rfs_fu,
+#          # risk = data$rfs_stat,
+#          # group = data$ch_gvhd,
+#          # cens = "cens",
+#          # title = "Number of events")
+# 
+# # p value not significant 
+# 
+# 
+# rfs <- rbind(gender_p_value, age_p_value, no_of_chemo_p_value, risk_p_value, gndr_match_p_value, abo_p_value , co_morb_p_value, prod_type_p_value, co_morb_1st_100_p_value, vascular_p_value, VOD_p_value, cap_p_value, eng_p_value, bact_p_value, cmv_p_value, organ_tox_p_value, GVHD_p_value, GVHD_type_p_value, ch_gvhd_p_value)
+# 
+# rfs <- rownames_to_column(rfs)
+# 
+# colnames(rfs) <- c("Item", "Death", "Relapse")
+
+# p-values for death and relapse 
+
+#rmdtbl(rfs)
+
+# in this model, cmv was significant 
+
+```
+
+
+```{r}
+
+data_d <- filter(data, !is.na(diagnosis) )
+
+explanatory_rfs = c("rec_gndr", "age_cat", "gndr_match", "abo", "dg_risk",  "CO.morbidities.before.BMT",  "CO.morbidities.1st.100.days.After.BMT", "hla_grp", "vascular", "X.VOD.", "capillary.leak.during.the.first.30.days..", "eng_syn", "infection", "Bacteremia...spesis", "CMV.viraemia", "Organ.toxicity", "GVHD", "ch_gvhd")
+
+
+# explanatory = c("rec_gndr"
+# , "age_cat", "No..of.chemo.before.BMT"
+# , "dg_risk"
+# , "gndr_match"
+# , "abo"
+# , "CO.morbidities.before.BMT"
+# , "hla_grp"
+# , "CO.morbidities.1st.100.days.After.BMT", "vascular",  "Bacteremia...spesis", "CMV.viraemia"
+# , "Organ.toxicity","ch_gvhd"
+# , "GVHD",
+# "X.VOD.",
+# "capillary.leak.during.the.first.30.days..",
+# "eng_syn"
+# )
+
+dependent_crr_rfs = c("Surv(rfs_fu, ff_st_rfs)")
+
+
+data_d %>%
+  summary_factorlist(dependent_crr_rfs, explanatory_rfs, column = TRUE, fit_id = TRUE) %>%
+  ff_merge(
+    data_d %>%
+      crruni(dependent_crr_rfs, explanatory_rfs) %>%
+      fit2df(estimate_suffix = " (competing risks univariable)")
+    ) %>%
+  select(-fit_id, -index) %>% 
+  remove_intercept() %>% 
+  rmdtbl()
+
+```
+
+# Multivariable competing risk regression 
+
+The three variables : infection, eng_syndrome and cmv should be entered as time dependent covariates. 
+I have added them wrongly 
+
+```{r}
+#I added cmv as it was significant by another model ( from package cr17)
+
+
+explanatory_rfs = c("age_cat", "dg_risk", "eng_syn", "infection",  "CMV.viraemia")
+
+dependent_crr_rfs = c("Surv(rfs_fu, ff_st_rfs)")
+
+
+data_d %>%
+  summary_factorlist(dependent_crr_rfs, explanatory_rfs, column = TRUE, fit_id = TRUE) %>%
+  ff_merge(
+    data_d %>%
+      crrmulti(dependent_crr_rfs, explanatory_rfs) %>%
+      fit2df(estimate_suffix = " (competing risks multivariable)")
+    ) %>%
+  select(-fit_id, -index) %>% 
+  remove_intercept() %>% 
+  rmdtbl()
+
+# https://rdrr.io/cran/cmprsk/man/crr.html 
+
+# I will not add No of chemo because it is identical to disease status 
+
+#data$dg_risk <- relevel(data$dg_risk, ref = "LR")
+
+# foo1 <- model.matrix(~  factor(data$CMV.viraemia) + factor(data$No..of.chemo.before.BMT) + factor(data$dg_risk) + factor(data$age_cat), data = data)[, -1]
+# 
+# data_d <- filter(data, !is.na(diagnosis))
+# 
+# z <- crr(ftime = data_d$rfs_fu, fstatus = data_d$rfs_st, foo1)
+# z_sum <- summary(z)
+# 
+# z_sum_ci <- data.frame(z_sum$conf.int[, c(1,3,4)])
+# z_sum <- cbind(z_sum_ci, z_sum$coef[,5])
+# 
+# z_sum <- rownames_to_column(z_sum)
+# colnames(z_sum) <- c("Risk factor", "HR", "lower_conf", "higher_conf", "p_value")
+# rmdtbl(z_sum)
+# The HR for low risk is strange 
+library(crskdiag)   # this ia a perfect package for diagnosis of crr
+library(time2event) # perfect package for crr with time dependent covariates 
+
+
+```
+
+
+```{r}
+# predict 
+# z.p <- predict(z,rbind(c(.1, .3, .5, .7, .8),c(.1,.3, .7, .8, .5)))
+# plot(z.p,lty=1,color=2:3)
+# crr(ftime,fstatus,cov,failcode=2)
+
+```
+
+# Scoring for all cause mortality 
+
+```{r}
+
+data$dg_risk <- fct_relevel(data$dg_risk, "LR")
+data$age_cat <- fct_relevel(data$age_cat, "11 or more")
+
+data_d$dg_risk <- fct_relevel(data_d$dg_risk, "LR")
+data_d$age_cat <- fct_relevel(data_d$age_cat, "11 or more")
+
+
+# I have found that the paper included factors of the multivariate cox, even if they were not significant, after rounding 
+
+
+rec_gndr <- model.matrix(~ data_d$rec_gndr - 1)
+age_cat <- model.matrix(~ data_d$age_cat - 1)
+risk <- model.matrix(~ data_d$dg_risk - 1)
+eng_syn <- model.matrix(~ data_d$eng_syn - 1)
+#n_chemo <- model.matrix(~ data_d$chemo_number - 1)
+# I will replace NAs in prod_type by BM, so all vectors become the same length  
+
+# prod_type <- data$prod_type_
+# prod_type[is.na(prod_type)] <- "BM"
+# prod_type <- model.matrix(~ prod_type - 1)
+# I decidec that I will remove the variablem there are only 11 patients with PB 
+
+# Remove the reference level indicator variable.
+rec_gndr <- rec_gndr[,2]
+age_cat <- age_cat[,c(2:3)]
+risk <- risk[, c(2:3)]
+eng_syn <- eng_syn[,2]
+
+#n_chemo <- n_chemo[,c(1)]
+#prod_type <- prod_type[, 2] I removed this variable 
+
+mult_cox <- coxph(Surv(data_d$os_fu, data_d$os_stat) ~ age_cat + dg_risk + eng_syn  , data = data_d )
+
+# I removed recipient gender as it is not significant
+
+multi_cox <- tidy(mult_cox, exponentiate = T)
+
+multi_cox <- multi_cox[, c(1, 2, 5:7)]
+
+derive.mat <- cbind(age_cat, risk,eng_syn)
+
+beta.mat <- matrix(as.vector(mult_cox$coefficients/ min(mult_cox$coefficients)), ncol = 1)
+
+#beta2.mat <- matrix(as.vector(round(20/log(2)*mult_cox$coefficients)),ncol=1)
+
+#beta3.mat <- matrix(as.vector(round(mult_cox$coefficients)),ncol=1)
+
+try <- cbind(multi_cox, beta.mat)
+
+colnames(try) <- c("term", "HR", "p_value", "conf_low", "conf_high", "points")
+
+try <- try %>% 
+  mutate(points_round = round(points * 2)/2)
+
+rmdtbl(try)
+
+```
+
+points are based on coefficients not HR. That's why points column is different from dividing the HR by the least. 
+
+
+
+
+
+```{r}
+# Distribution of points 
+
+# try <- try[try$p.value < 0.05,]
+# 
+X.score <- derive.mat %*% beta.mat
+
+X.score <- as.vector(X.score)
+
+values <- quantile(X.score)
+#values
+```
+
+
+```{r}
+
+# These 3 show what are the levels of the score 
+#cut(beta.mat, 3)
+#cut(X.score,3)
+#cut(X.score, 4)
+
+my_score_3 <- c("<=1", "1-4", ">= 4")
+#my_score_4 <- c("<= 4", "5 - 13", "14 - 21", ">=22")
+
+risk.strat2 <- cut(X.score, c(0, 1, 3.99, 100), labels = c("<=1", "1-4", ">= 4"))
+
+# thresholds <- quantile(X.score,probs=c(0,0.2,0.4,0.6,0.8,1))
+#  thr <- quantile(X.score,probs=c(0,0.33,0.66,1))
+# # thr3 <- quantile(X.score,probs=c(0,0.25,0.50, 0.75, 1))
+# # 
+# # risk.strata <- cut(X.score,include.lowest=T,labels=F,breaks=thresholds)
+# # 
+#  risk.strat2 <- cut(X.score,include.lowest=T,labels=F,breaks=thr)
+# 
+# risk.strat4 <- cut(X.score,include.lowest=T,labels=F,breaks=thr3)
+# 
+# table(risk.strata)
+# table(risk.strat2)
+# table(risk.strat4)
+
+# I will use threshold 2 .. 
+
+# theoretical max = 
+# theoretical min =  
+# eng_syn(yes) and n_chemo both conferred the largest number of points (11).
+
+# the observed score ranged from  to 
+
+```
+
+
+
+
+```{r}
+# Scoring of each risk
+
+
+# score_values <- cbind(try[1], beta.mat)
+# 
+# score_values[1,1] <- "rec_gndr_Male"
+# 
+# score_values[2,1] <- "eng_syn_Yes"
+# 
+# score_values[5,1] <- "n_chemo_2"
+# 
+# score_values[6,1] <- "risk_High"
+# 
+# colnames(score_values)[2] <- "points"
+# 
+# score_values
+```
+
+
+
+
+```{r}
+# Scoring of the 1st 10 patients
+
+# rmdtbl(data.frame(head(cbind(derive.mat, X.score), 10)))
+
+```
+
+
+
+```{r}
+
+# Score categories  
+
+### 3 risk categories 
+#rmdtbl(data.frame(cbind(my_score_3, c("Low risk", "Intermediate risk", "High risk"))))
+
+
+```
+
+
+
+```{r}
+
+### 4 risk categories 
+
+#cbind(my_score_4, c("very low risk", "Low risk", "Intermediate risk", "High risk"))
+
+
+```
+
+
+# How the score categories differ in hazard ratio ..
+
+### Hazard ratio for the 3 categories 
+
+```{r}
+
+# https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5084773/ 
+
+
+# The regression coefficients for the Fine-Gray subdistribution hazard model fit to the overall sample are reported in Table 4. In the right-most column of the table are the points associated with the presence of a given level of a risk factor (with the reference level being assigned zero points) (as described above, the points were determined by multiplying the regression coefficient by 10 and rounding to the nearest integer). Advanced age (???75???years old) conferred the largest number of points (17). The theoretical minimum and maximum sum of the points were ???12 and 45, respectively. The observed scores in the EFFECT-AMI sample ranged from ???11 to 45. The median score was 13, while the 25th and 75th percentiles were 4 and 23, respectively.
+
+# u will have to apply cox for the three categories after the cut 
+# and get their percentage of OS 
+
+data_d$risk_s <- as.factor(risk.strat2)  # 3 categories 
+levels(data_d$risk_s) <- c("good", "intermediate", "poor") 
+
+
+risk_s <- cbind(my_score_3[-1], tidy(coxph(Surv(os_fu, os_stat) ~ risk_s , data =  data_d), exponentiate = T))
+
+risk_s <- risk_s[, c(1, 3, 6,7,8)]
+colnames(risk_s) <- c("score", "HR", "p_value", "conf_low", "conf_high")
+
+rmdtbl(risk_s)
+
+```
+
+# Overall survival according to scoring
+
+```{r}
+
+rmdtbl(surv(data_d$risk_s, 36, data_d))
+
+
+```
+
+# overall survival Kaplan meier
+
+```{r fig.height= 10, fig.width= 10}
+
+km(data_d$risk_s, data_d)
+
+```
+
+
+```{r}
+
+### Hazard ratio for the 4 categories 
+
+#risk_5 <- as.factor(risk.strata)  # 5 categories
+# #coxph(Surv(os_fu, os_stat) ~ risk_5 , data =  data)
+# 
+# risk_4 <- as.factor(risk.strat4) # 4 categories 
+# 
+# risk_4 <- cbind(my_score_4[-1], tidy(coxph(Surv(os_fu, os_stat) ~ risk_4 , data =  data_d),exponentiate = TRUE)) 
+# 
+# risk_4 <- risk_4[, c(1, 3, 6,7,8)]
+# colnames(risk_4) <- c("score", "HR", "p_value", "conf_low", "conf_high")
+# 
+# #risk_4
+
+# note that the cumulative incidence code in the paper is perfect, and it includes plots 
+
+# here is my score for the 3 and 4 categories 
+
+```
+
+
+# Scoring for event free survival 
+
+
+```{r}
+
+dependent = "Surv(efs_fu, efs_st)"
+  
+explanatory_multi = c("age_cat", "dg_risk", "eng_syn", "infection")   # risk removed 
+
+
+data_d$infection <- fct_relevel(data_d$infection, "Yes")
+
+
+age_cat <- model.matrix(~ data_d$age_cat - 1)
+risk <- model.matrix(~ data_d$dg_risk - 1)
+eng_syn <- model.matrix(~ data_d$eng_syn - 1)
+infection <- model.matrix(~ data_d$infection - 1)
+
+# I will replace NAs in prod_type by BM, so all vectors become the same length  
+
+# prod_type <- data$prod_type_
+# prod_type[is.na(prod_type)] <- "BM"
+# prod_type <- model.matrix(~ prod_type - 1)
+# I decidec that I will remove the variablem there are only 11 patients with PB 
+# Remove the reference level indicator variable.
+
+age_cat <- age_cat[,c(2:3)]
+risk <- risk[, c(2:3)]
+eng_syn <- eng_syn[,2]
+infection <- infection[,2]
+#n_chemo <- n_chemo[,c(1)]
+#prod_type <- prod_type[, 2] I removed this variable 
+
+mult_cox <- coxph(Surv(data_d$os_fu, data_d$os_stat) ~ age_cat + eng_syn+ infection  , data = data_d )
+
+# I removed recipient gender as it is not significant
+
+multi_cox <- tidy(mult_cox, exponentiate = T)
+
+multi_cox <- multi_cox[, c(1, 2, 5:7)]
+
+derive.mat <- cbind(age_cat, eng_syn, infection)
+
+beta.mat <- matrix(as.vector(mult_cox$coefficients/ min(mult_cox$coefficients)))
+
+#beta2.mat <- matrix(as.vector(round(20/log(2)*mult_cox$coefficients)),ncol=1)
+
+#beta3.mat <- matrix(as.vector(round(mult_cox$coefficients)),ncol=1)
+
+try <- cbind(multi_cox, beta.mat)
+
+colnames(try) <- c("term", "HR", "p_value", "conf_low", "conf_high", "points")
+
+try <- try %>% 
+  mutate(points_round = round(points * 2)/2)
+
+rmdtbl(try)
+
+```
+
+points are based on coefficients not HR. That's why points column is different from dividing the HR by the least. 
+
+
+
+
+
+
+```{r}
+# Distribution of points 
+
+  #try <- try[try$p.value < 0.05,]
+
+ X.score <- derive.mat %*% beta.mat
+ 
+ X.score <- as.vector(X.score)
+ 
+ values <- quantile(X.score) 
+#values
+ 
+```
+
+
+```{r}
+
+# These 3 show what are the levels of the score 
+#cut(beta.mat, 3)
+#cut(X.score,3)
+#cut(X.score, 4)
+
+my_score_3 <- c("<=2", "2-5", ">= 5")
+#my_score_4 <- c("<= 4", "5 - 13", "14 - 21", ">=22")
+
+
+risk.strat2 <- cut(X.score, c(-1, 1.5, 3, 100), labels = c("<=1.5", "1.51-3", ">3"))
+
+# thresholds <- quantile(X.score,probs=c(0,0.2,0.4,0.6,0.8,1))
+# thr <- quantile(X.score,probs=c(0,0.33,0.66,1))
+# thr3 <- quantile(X.score,probs=c(0,0.25,0.50, 0.75, 1))
+# 
+# risk.strata <- cut(X.score,include.lowest=T,labels=F,breaks=thresholds)
+# 
+# risk.strat2 <- cut(X.score,include.lowest=T,labels=F,breaks=thr)
+# 
+# risk.strat4 <- cut(X.score,include.lowest=T,labels=F,breaks=thr3)
+
+
+# table(risk.strata)
+#table(risk.strat2)
+# table(risk.strat4)
+
+# I will use threshold 2 .. 
+
+# theoretical max = 
+# theoretical min =  
+# eng_syn(yes) and n_chemo both conferred the largest number of points (11).
+
+# the observed score ranged from  to 
+
+```
+
+
+
+
+```{r}
+# Scoring of each risk
+
+
+# score_values <- cbind(try[1], beta.mat)
+# 
+# score_values[1,1] <- "rec_gndr_Male"
+# 
+# score_values[2,1] <- "eng_syn_Yes"
+# 
+# score_values[5,1] <- "n_chemo_2"
+# 
+# score_values[6,1] <- "risk_High"
+# 
+# colnames(score_values)[2] <- "points"
+# 
+# score_values
+```
+
+
+
+
+```{r}
+# Scoring of the 1st 10 patients
+
+# rmdtbl(data.frame(head(cbind(derive.mat, X.score), 10)))
+
+```
+
+
+
+```{r}
+# Score categories  
+
+### 3 risk categories 
+#rmdtbl(data.frame(cbind(my_score_3, c("Low risk", "Intermediate risk", "High risk"))))
+
+
+```
+
+
+
+```{r}
+
+### 4 risk categories 
+
+#cbind(my_score_4, c("very low risk", "Low risk", "Intermediate risk", "High risk"))
+
+
+```
+
+
+# How the score categories differ in hazard ratio ..
+
+### Hazard ratio for the 3 categories 
+
+```{r}
+
+# https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5084773/ 
+
+
+# The regression coefficients for the Fine-Gray subdistribution hazard model fit to the overall sample are reported in Table 4. In the right-most column of the table are the points associated with the presence of a given level of a risk factor (with the reference level being assigned zero points) (as described above, the points were determined by multiplying the regression coefficient by 10 and rounding to the nearest integer). Advanced age (???75???years old) conferred the largest number of points (17). The theoretical minimum and maximum sum of the points were ???12 and 45, respectively. The observed scores in the EFFECT-AMI sample ranged from ???11 to 45. The median score was 13, while the 25th and 75th percentiles were 4 and 23, respectively.
+
+# u will have to apply cox for the three categories after the cut 
+# and get their percentage of OS 
+
+data_d$risk_s <- as.factor(risk.strat2)  # 3 categories 
+levels(data_d$risk_s) <- c("good", "intermediate", "poor") 
+
+
+risk_s <- cbind(my_score_3[-1], tidy(coxph(Surv(os_fu, os_stat) ~ risk_s , data =  data_d), exponentiate = T))
+
+risk_s <- risk_s[, c(1, 3, 6,7,8)]
+
+colnames(risk_s) <- c("score", "HR", "p_value", "conf_low", "conf_high")
+
+rmdtbl(risk_s)
+
+```
+
+# Event free survival according to scoring
+
+```{r}
+
+surv_efs <- function(gp, t, df = data){
+  
+fite <- surv_fit(formula = Surv(efs_fu, efs_st) ~ gp ,data = df)
+
+OS_summary_chemo <-  summary(fite,times= t)
+
+p_val <- surv_pvalue(fite, data = df)[4]
+
+
+OS_years5_chemo <-  OS_summary_chemo$surv
+OS_years5_chemo <- scales::percent(OS_years5_chemo)
+
+lower_CI <- (OS_summary_chemo$lower)*100
+upper_CI <- (OS_summary_chemo$upper)*100
+
+OS_years2_chemo <- data.frame(OS_years5_chemo)
+
+OS_sum<- surv_summary(fite, data= data)
+
+OS_sum_table <- attr(OS_sum, "table")
+
+OS_sum_table <- OS_sum_table[,c(1,4)]
+
+colnames(OS_sum_table) <- c("subjects", "events")
+
+table <- cbind(OS_years5_chemo, OS_sum_table, p_val, lower_CI, upper_CI)
+table <- cbind(row.names(table), table)
+colnames(table) <- c("Prognostic factor", "EFS", "subjects", "events", "p_value","lower_CI", "upper_CI")
+
+table <- table %>% 
+  mutate(p_value = ifelse(is.na(lag(p_value)) , p_value, " "))
+return(table)
+}
+
+
+rmdtbl(surv_efs(data_d$risk_s, 36, df = data_d))
+
+
+```
+
+```{r}
+
+km_efs <- function(gp, df = data){
+  
+  fit <- do.call(survfit, list(formula = Surv(efs_fu, efs_st) ~ gp , data = df))
+ 
+plot = ggsurvplot(
+  fit, data = df,
+  # data used to fit survival curves.
+  #surv_plot(OS_data, OS_data$OS_FU, OS_data$OS_status)
+  risk.table = TRUE,       # show risk table.
+  palette = "jco",
+  pval = TRUE,             # show p-value of log-rank test.
+  conf.int = FALSE,         # show confidence intervals for
+  # point estimaes of survival curve3dwrfsqxcazves.
+  xlim = c(0,80),        # present narrower X axis, but not affect
+  # survival estimates.
+  break.time.by = 5,     # break X axis in time intervals by 500.
+  ggtheme = theme_minimal(), # customize plot and risk table with a theme.
+  risk.table.y.text.col = T, # colour risk table text annotations.
+  risk.table.y.text = FALSE # show bars instead of names in text annotations
+  # in legend of risk table
+)
+return(plot)
+}
+
+
+km_efs(data_d$risk_s, data_d)
+
+```
+
+
+
+# Bar charts
+
+```{r}
+
+library(ggrepel)
+
+bar <- function(col1, title1){
+
+  frame<- data.frame(table(col1))
+
+  frame$col1 <- factor(frame$col1, levels = frame$col1[order(frame$Freq, decreasing = TRUE)])
+
+  plot <- ggplot(frame, aes(x=frame[[1]], y= Freq))+
+    geom_bar(stat = "identity", fill="steelblue")+
+    labs(title= title1) +
+ #   theme(title = blue.bold.italic.text, axis.title = blue.bold.italic.text) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 0.5),
+          plot.title = element_text(size = 22)) +
+    geom_label_repel(label = frame$Freq) +
+  labs(x = title1)
+
+  return(plot)
+}
+
+# freq(data, na.rm = T, input = c('rec_gndr','Recipient.s.Diagnosis', 'risk','Donor.s.Gender.', 'abo', 'Disease.Status.', 'CO.morbidities.before.BMT', 'Type.of.conditioning.', 'Product.Type', 'Was.cell.processing.or.manipulation.done..', 'X.VOD.', 'capillary.leak.during.the.first.30.days..', 'diffuse.alveolar.hemorrhage..', 'microangiopathy','eng_syn', 'Bacteremia...spesis','CMV.viraemia',  'GVHD', 'GVHD..type', 'Organ.toxicity', 'hemorrhagic.cystitis..', 'Disease.Status.', 'Relapse.at.any.given.time..', 'Patient.s.status',  'Cause.of.Death.', 'Current.Disease.Status.',  'Did.the.patient.develop.transplant.related.mortality..', 'prophylaxisi', 'hla_grp'))
+
+bar(data$rec_gndr, "Recipient gender")
+bar(data$Recipient.s.Diagnosis, "Diagnosis")
+bar(data$Donor.s.Gender., "Donor's gender")
+bar(data$Disease.Status., "Disease status")
+bar(data$CO.morbidities.before.BMT, "Comorbidities before BMT")
+bar(data$Type.of.conditioning., "Type of conditioning")
+bar(data$Product.Type, "Product type")
+bar(data$X.VOD., "VOD")
+bar(data$capillary.leak.during.the.first.30.days.., "Capillary leak")
+bar(data$diffuse.alveolar.hemorrhage.., "DAH")
+bar(data$microangiopathy, "Microangiopathy")
+bar(data$eng_syn, "Engraftment syndrome")
+bar(data$Bacteremia...spesis, "Bacteremia/sepsis")
+bar(data$CMV.viraemia, "CMV")
+bar(data$GVHD, "GVHD")
+bar(data$GVHD..type, "GVHD-type")
+bar(data$Organ.toxicity, "Organ toxicity")
+bar(data$hemorrhagic.cystitis.., "Hemorrhagic cycstis")
+bar(data$Relapse.at.any.given.time.., "Relapse anytime")
+bar(data$Patient.s.status, "Patient status")
+bar(data$Cause.of.Death., "Cause")
+bar(data$Current.Disease.Status., "Current disease status")
+bar(data$Did.the.patient.develop.transplant.related.mortality.., "TRM")
+bar(data$prophylaxisi, "Prophylaxis")
+bar(data$hla_grp, "HLA group")
+bar(data$dg_risk, "Risk")
+
+
+```
+
+
+
+
+
+```{r}
+
+# rndr <- function(x, name, ...) {
+#     if (!is.numeric(x)) return(render.categorical.default(x))
+#     what <- switch(name,
+#         Age.at.time.of.SCT. = "Mean (SD)")
+#   #      wt  = "Mean (SD)")
+#     parse.abbrev.render.code(c("", what))(x)
+# }
+# #hist(data$Age.at.time.of.SCT.)
+# 
+
+
+```
+
+
+
+
+
+```{r}
+# why male gender is significant?
+# maybe the problem is due to exclusion of diagnosis 
+
+# rec <- data$rec_gndr
+# rec[rec == "Female"] <- "FR"
+# 
+# table(rec, data$Donor.s.Gender)
+# 
+# table(data$Recipient.s.Diagnosis, rec)
+
+```
+
+
+```{r}
+# cmv and gvhd 
+
+# 
+# cmv <- data$CMV.viraemia
+# gvhd <- data$GVHD
+# 
+# table(cmv, gvhd)
+
+```
+
+
+
+
+# Descriptive statistics
+
+
+```{r}
+
+data$Patient.s.status <- as.factor(data$Patient.s.status)
+data$Cause.of.Death. <- as.factor(data$Cause.of.Death.)
+data$Current.Disease.Status. <- as.factor(data$Current.Disease.Status.)
+
+explanatory_desc = c('rec_gndr', "Age.at.time.of.SCT.", "age_cat", 'Recipient.s.Diagnosis', 'Donor.s.Gender.' ,"dg_risk", 'abo', 'CO.morbidities.before.BMT'
+, 'Type.of.conditioning.', 'Product.Type', 'Was.cell.processing.or.manipulation.done..', 'X.VOD.'
+, 'capillary.leak.during.the.first.30.days..', 'diffuse.alveolar.hemorrhage..', 'microangiopathy','eng_syn'
+, 'Bacteremia...spesis','CMV.viraemia'
+,  'GVHD', 'GVHD..type', 'Organ.toxicity', 'hemorrhagic.cystitis..', 'Disease.Status.' , 'Relapse.at.any.given.time..'
+, 'Patient.s.status' , 'Cause.of.Death.'  , 'Current.Disease.Status.'
+,  'Did.the.patient.develop.transplant.related.mortality..'
+, 'hla_grp' , 'prophylaxisi'
+)
+
+
+summary_factorlist(data, explanatory = explanatory_desc,
+
+                     na_include = T, column = T,
+  total_col = F) -> t
+
+names(t) <- c("Factor", "Levels", "Frequency(%)")
+
+rmdtbl(t)
+
+# freq(data, na.rm = T, input = c('rec_gndr','Recipient.s.Diagnosis', 'risk','Donor.s.Gender.', 'abo', 'Disease.Status.', 'CO.morbidities.before.BMT', 'Type.of.conditioning.', 'Product.Type', 'Was.cell.processing.or.manipulation.done..', 'X.VOD.', 'capillary.leak.during.the.first.30.days..', 'diffuse.alveolar.hemorrhage..', 'microangiopathy','eng_syn', 'Bacteremia...spesis','CMV.viraemia',  'GVHD', 'GVHD..type', 'Organ.toxicity', 'hemorrhagic.cystitis..', 'Disease.Status.', 'Relapse.at.any.given.time..', 'Patient.s.status',  'Cause.of.Death.', 'Current.Disease.Status.',  'Did.the.patient.develop.transplant.related.mortality..', 'prophylaxisi', 'hla_grp'))
+
+```
+
+
